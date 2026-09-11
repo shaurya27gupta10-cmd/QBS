@@ -21,7 +21,7 @@ export function Footer({ setActiveTab }: FooterProps) {
               <span className="text-xs text-slate-500 font-medium">v1.0.0</span>
             </div>
             <p className="text-xs text-slate-500 max-w-sm">
-              &ldquo;Turn your private message into a secure sound.&rdquo; Fully client-side cryptographic sound synthesis.
+              &ldquo;Your Message. Your File. Your Password. Your Sound.&rdquo; Fully client-side cryptographic sound synthesis.
             </p>
           </div>
 

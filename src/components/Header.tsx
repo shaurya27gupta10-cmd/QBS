@@ -44,7 +44,7 @@ export function Header({ activeTab, setActiveTab }: HeaderProps) {
                   v1.0
                 </span>
               </div>
-              <p className="text-xs text-slate-500 font-medium">Secure Sound Messaging</p>
+              <p className="text-xs text-slate-500 font-medium">Your Message. Your File. Your Password. Your Sound.</p>
             </div>
           </button>
 

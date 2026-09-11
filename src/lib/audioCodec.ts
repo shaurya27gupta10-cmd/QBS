@@ -201,7 +201,7 @@ export function extractPayloadFromWav(arrayBuffer: ArrayBuffer): Uint8Array {
 
   // Check RIFF header
   if (arrayBuffer.byteLength < 44) {
-    throw new Error('This does not appear to be a valid QBS Secure Sound file.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   const riffStr = String.fromCharCode(
@@ -235,7 +235,7 @@ export function extractPayloadFromWav(arrayBuffer: ArrayBuffer): Uint8Array {
 
     if (chunkId === 'qbsd') {
       if (offset + chunkSize > arrayBuffer.byteLength) {
-        throw new Error('The secure sound appears to be damaged or incomplete.');
+        throw new Error('The audio does not contain a valid QBS secure payload.');
       }
       return new Uint8Array(arrayBuffer.slice(offset, offset + chunkSize));
     }
@@ -246,5 +246,5 @@ export function extractPayloadFromWav(arrayBuffer: ArrayBuffer): Uint8Array {
   }
 
   // If no 'qbsd' chunk found in the WAV file
-  throw new Error('This does not appear to be a valid QBS Secure Sound file.');
+  throw new Error('The audio does not contain a valid QBS secure payload.');
 }

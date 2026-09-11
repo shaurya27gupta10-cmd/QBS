@@ -12,7 +12,7 @@ import { generateEncryptedQrCode } from '../lib/qr';
 import { AudioVisualizer } from './AudioVisualizer';
 
 interface FileEncodeTabProps {
-  onTestDecode: (blob: Blob, filename: string, payload: Uint8Array) => void;
+  onTestDecode: (blob: Blob, filename: string, payload: Uint8Array, password?: string) => void;
 }
 
 // Limits
@@ -127,19 +127,74 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
     }
   };
 
-  // Drag & drop handlers
-  const handleDragOver = (e: DragEvent) => {
+  // Prevent default window navigation if file dropped outside drop zone
+  useEffect(() => {
+    const preventDefaultWindowDrop = (e: globalThis.DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', preventDefaultWindowDrop, false);
+    window.addEventListener('drop', preventDefaultWindowDrop, false);
+    return () => {
+      window.removeEventListener('dragover', preventDefaultWindowDrop, false);
+      window.removeEventListener('drop', preventDefaultWindowDrop, false);
+    };
+  }, []);
+
+  // Robust Drag & drop handlers
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    setIsDragOver(true);
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragOver(true);
+    }
   };
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
-  const handleDrop = (e: DragEvent) => {
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isDragOver) {
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
     setIsDragOver(false);
+
+    let droppedFile: File | null = null;
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      processSelectedFile(e.dataTransfer.files[0]);
+      droppedFile = e.dataTransfer.files[0];
+    } else if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      for (let i = 0; i < e.dataTransfer.items.length; i++) {
+        const item = e.dataTransfer.items[i];
+        if (item.kind === 'file') {
+          const f = item.getAsFile();
+          if (f) {
+            droppedFile = f;
+            break;
+          }
+        }
+      }
+    }
+
+    if (droppedFile) {
+      processSelectedFile(droppedFile);
     }
   };
 
@@ -147,6 +202,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
     if (e.target.files && e.target.files.length > 0) {
       processSelectedFile(e.target.files[0]);
     }
+    e.target.value = '';
   };
 
   // Trigger file picker with chosen category
@@ -352,7 +408,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
       // Revoke temporary test URL
       URL.revokeObjectURL(decryptedResult.objectUrl);
     } catch (testErr: unknown) {
-      console.error(testErr);
+      console.warn('Verification notice:', testErr instanceof Error ? testErr.message : testErr);
       setTestResult({
         status: 'failed',
         message: testErr instanceof Error ? testErr.message : '✕ Verification failed during playback demodulation.',
@@ -428,23 +484,24 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
         <div className="space-y-4">
           <div
             id="file-drop-zone"
+            onDragEnter={handleDragEnter}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onClick={() => openFilePicker('all')}
-            className={`border-2 border-dashed rounded-2xl p-8 sm:p-12 text-center transition-all cursor-pointer ${
+            className={`border-2 border-dashed rounded-2xl p-8 sm:p-12 text-center transition-all cursor-pointer select-none ${
               isDragOver
-                ? 'border-blue-500 bg-blue-50/60 shadow-sm'
+                ? 'border-blue-500 bg-blue-50/80 shadow-md ring-4 ring-blue-100 scale-[1.005]'
                 : 'border-slate-300 hover:border-blue-400 bg-white hover:bg-slate-50/50'
             }`}
           >
-            <div className="flex flex-col items-center justify-center space-y-3">
+            <div className="flex flex-col items-center justify-center space-y-3 pointer-events-none">
               <div className="w-14 h-14 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shadow-xs">
-                <Upload className="w-7 h-7" />
+                <Upload className={`w-7 h-7 transition-transform ${isDragOver ? 'scale-110 text-blue-700' : ''}`} />
               </div>
               <div className="space-y-1">
                 <p className="text-base font-bold text-slate-900">
-                  Drop your file here
+                  {isDragOver ? 'Release to drop file here' : 'Drop your file here'}
                 </p>
                 <p className="text-xs text-slate-500">
                   or
@@ -455,7 +512,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
                     e.stopPropagation();
                     openFilePicker('all');
                   }}
-                  className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs shadow-xs transition-colors"
+                  className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs shadow-xs transition-colors pointer-events-auto"
                 >
                   <FolderLock className="w-3.5 h-3.5" />
                   <span>Choose File</span>
@@ -514,7 +571,22 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
         </div>
       ) : (
         /* Selected File Card & Previews */
-        <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4 shadow-xs">
+        <div
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`bg-white rounded-2xl border p-5 space-y-4 shadow-xs transition-all relative ${
+            isDragOver ? 'border-blue-500 ring-4 ring-blue-100 bg-blue-50/20' : 'border-slate-200'
+          }`}
+        >
+          {isDragOver && (
+            <div className="absolute inset-0 bg-blue-50/90 border-2 border-blue-500 border-dashed rounded-2xl z-10 flex flex-col items-center justify-center pointer-events-none p-4 text-center">
+              <Upload className="w-8 h-8 text-blue-600 animate-bounce mb-2" />
+              <p className="text-sm font-bold text-blue-900">Drop new file to replace selection</p>
+              <p className="text-xs text-blue-600">Supports images, videos, audio, documents and binaries</p>
+            </div>
+          )}
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-start gap-3.5 overflow-hidden">
               <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 flex-shrink-0 mt-0.5">
@@ -869,7 +941,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
                 <span>{testResult.message}</span>
                 {testResult.status === 'success' && (
                   <button
-                    onClick={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload)}
+                    onClick={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password)}
                     className="ml-2 text-xs font-bold text-emerald-900 underline hover:no-underline whitespace-nowrap"
                   >
                     Open in Decoder &rarr;

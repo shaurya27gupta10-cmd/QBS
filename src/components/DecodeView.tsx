@@ -16,6 +16,7 @@ interface DecodeViewProps {
     blob: Blob;
     filename: string;
     payload?: Uint8Array;
+    password?: string;
   } | null;
 }
 
@@ -51,13 +52,26 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [audioDuration, setAudioDuration] = useState<number>(0);
 
+  // Keep refs to avoid effect loops
+  const audioUrlRef = useRef<string | null>(null);
+  const decryptedFileRef = useRef<DecryptedFileResult | null>(null);
+  const prevInitialBlobRef = useRef<Blob | null>(null);
+
+  useEffect(() => {
+    audioUrlRef.current = audioUrl;
+  }, [audioUrl]);
+
+  useEffect(() => {
+    decryptedFileRef.current = decryptedFile;
+  }, [decryptedFile]);
+
   // Clean up object URLs
   useEffect(() => {
     return () => {
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-      if (decryptedFile?.objectUrl) URL.revokeObjectURL(decryptedFile.objectUrl);
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+      if (decryptedFileRef.current?.objectUrl) URL.revokeObjectURL(decryptedFileRef.current.objectUrl);
     };
-  }, [audioUrl, decryptedFile]);
+  }, []);
 
   // Format bytes helper
   const formatBytes = (bytes: number): string => {
@@ -75,7 +89,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
       setDetectedInfo(info);
       setExtractedRawPayload(payload);
       return info;
-    } catch (err) {
+    } catch {
       setDetectedInfo(null);
       return null;
     }
@@ -84,7 +98,9 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   const handleFileProcess = useCallback(async (file: File | Blob, name: string) => {
     setError(null);
     setDecryptedMessage(null);
-    if (decryptedFile?.objectUrl) URL.revokeObjectURL(decryptedFile.objectUrl);
+    if (decryptedFileRef.current?.objectUrl) {
+      URL.revokeObjectURL(decryptedFileRef.current.objectUrl);
+    }
     setDecryptedFile(null);
     setDetectedInfo(null);
     setExtractedRawPayload(null);
@@ -102,10 +118,11 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     setFileName(name);
     setFileSize(file.size);
 
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
     }
     const url = URL.createObjectURL(file);
+    audioUrlRef.current = url;
     setAudioUrl(url);
 
     // Pre-parse the WAV container to detect payload type before password entry
@@ -116,12 +133,16 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     } catch {
       // Ignore if user hasn't pressed decode yet; handleDecode will report full error
     }
-  }, [audioUrl, decryptedFile]);
+  }, []);
 
   // If initial file is provided via "Test Decode" from EncodeView
   useEffect(() => {
-    if (initialFile) {
+    if (initialFile && initialFile.blob !== prevInitialBlobRef.current) {
+      prevInitialBlobRef.current = initialFile.blob;
       handleFileProcess(initialFile.blob, initialFile.filename);
+      if (initialFile.password) {
+        setPassword(initialFile.password);
+      }
     }
   }, [initialFile, handleFileProcess]);
 
@@ -144,22 +165,78 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     }
   };
 
-  // Drag & drop handlers
-  const handleDragOver = (e: DragEvent) => {
+  // Prevent default window navigation if file dropped outside drop zone
+  useEffect(() => {
+    const preventDefaultWindowDrop = (e: globalThis.DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', preventDefaultWindowDrop, false);
+    window.addEventListener('drop', preventDefaultWindowDrop, false);
+    return () => {
+      window.removeEventListener('dragover', preventDefaultWindowDrop, false);
+      window.removeEventListener('drop', preventDefaultWindowDrop, false);
+    };
+  }, []);
+
+  // Robust Drag & drop handlers
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    setIsDragOver(true);
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragOver(true);
+    }
   };
 
-  const handleDragLeave = () => {
-    setIsDragOver(false);
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isDragOver) {
+      setIsDragOver(true);
+    }
   };
 
-  const handleDrop = (e: DragEvent) => {
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
     setIsDragOver(false);
+
+    let droppedFile: File | null = null;
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      handleFileProcess(file, file.name);
+      droppedFile = e.dataTransfer.files[0];
+    } else if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      for (let i = 0; i < e.dataTransfer.items.length; i++) {
+        const item = e.dataTransfer.items[i];
+        if (item.kind === 'file') {
+          const f = item.getAsFile();
+          if (f) {
+            droppedFile = f;
+            break;
+          }
+        }
+      }
+    }
+
+    if (droppedFile) {
+      // If dropped in QR mode, switch to audio mode automatically
+      if (sourceMode !== 'audio') {
+        setSourceMode('audio');
+      }
+      handleFileProcess(droppedFile, droppedFile.name);
     }
   };
 
@@ -168,6 +245,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
       const file = e.target.files[0];
       handleFileProcess(file, file.name);
     }
+    e.target.value = '';
   };
 
   // Toggle Audio Playback
@@ -264,7 +342,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
         setDecryptedMessage(plaintext);
       }
     } catch (err: unknown) {
-      console.error(err);
+      console.warn('Decode validation notice:', err instanceof Error ? err.message : err);
       if (err instanceof Error) {
         setError(err.message);
       } else {
@@ -394,13 +472,14 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
             </label>
             <div
               id="audio-drop-zone"
+              onDragEnter={handleDragEnter}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-2xl p-6 sm:p-8 text-center transition-all cursor-pointer ${
+              className={`border-2 border-dashed rounded-2xl p-6 sm:p-8 text-center transition-all cursor-pointer select-none ${
                 isDragOver
-                  ? 'border-blue-500 bg-blue-50/50'
-                  : 'border-slate-300 hover:border-slate-400 bg-slate-50/50'
+                  ? 'border-blue-500 bg-blue-50/80 shadow-md ring-4 ring-blue-100 scale-[1.005]'
+                  : 'border-slate-300 hover:border-blue-400 bg-slate-50/50'
               }`}
               onClick={() => document.getElementById('file-upload-input')?.click()}
             >
@@ -412,12 +491,18 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                 onChange={handleFileInputChange}
               />
 
-              <div className="flex flex-col items-center justify-center space-y-2">
-                <div className="w-12 h-12 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
-                  <Upload className="w-6 h-6" />
+              <div className="flex flex-col items-center justify-center space-y-2 pointer-events-none">
+                <div className="w-12 h-12 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shadow-xs">
+                  <Upload className={`w-6 h-6 transition-transform ${isDragOver ? 'scale-110 text-blue-700' : ''}`} />
                 </div>
                 <div className="text-sm font-medium text-slate-800">
-                  <span className="font-bold text-blue-600 hover:underline">Choose Audio File</span> or drop your QBS sound here
+                  {isDragOver ? (
+                    <span className="font-bold text-blue-600">Release to drop QBS Sound file</span>
+                  ) : (
+                    <>
+                      <span className="font-bold text-blue-600 hover:underline">Choose Audio File</span> or drop your QBS sound here
+                    </>
+                  )}
                 </div>
                 <p className="text-xs text-slate-500">
                   Supports official QBS WAV sound files generated by this application

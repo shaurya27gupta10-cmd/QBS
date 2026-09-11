@@ -152,7 +152,7 @@ export async function decryptPayload(payload: Uint8Array, password: string): Pro
 
   // Minimum size check: 4 + 1 + 1 + 16 + 12 + 4 + 16 (min GCM tag) + 4 = 58 bytes
   if (payload.length < 58) {
-    throw new Error('This does not appear to be a valid QBS Secure Sound file.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   // Check Magic header
@@ -162,7 +162,7 @@ export async function decryptPayload(payload: Uint8Array, password: string): Pro
     payload[2] !== MAGIC_HEADER[2] ||
     payload[3] !== MAGIC_HEADER[3]
   ) {
-    throw new Error('This does not appear to be a valid QBS Secure Sound file.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   const version = payload[4];
@@ -188,7 +188,7 @@ export async function decryptPayload(payload: Uint8Array, password: string): Pro
   offset += 4;
 
   if (offset + ciphertextLen + 4 !== payload.length) {
-    throw new Error('The secure sound appears to be damaged or incomplete.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   const ciphertext = payload.slice(offset, offset + ciphertextLen);
@@ -199,13 +199,15 @@ export async function decryptPayload(payload: Uint8Array, password: string): Pro
   const calculatedCrc = calculateCRC32(dataForCrc);
 
   if (storedCrc !== calculatedCrc) {
-    throw new Error('The secure sound appears to be damaged or incomplete.');
+    throw new Error('Integrity check failed. The encrypted data has been altered.');
   }
 
-  // Derive key and decrypt
+  // Derive key and decrypt with primary password or trimmed fallback
+  let decryptedBuffer: ArrayBuffer | null = null;
+
   try {
     const key = await deriveKeyFromPassword(password, salt);
-    const decryptedBuffer = await crypto.subtle.decrypt(
+    decryptedBuffer = await crypto.subtle.decrypt(
       {
         name: 'AES-GCM',
         iv: iv as BufferSource,
@@ -213,12 +215,32 @@ export async function decryptPayload(payload: Uint8Array, password: string): Pro
       key,
       ciphertext as BufferSource
     );
+  } catch {
+    // If decryption fails and password has leading/trailing whitespace, try trimmed password
+    if (password.trim() !== password && password.trim().length > 0) {
+      try {
+        const trimmedKey = await deriveKeyFromPassword(password.trim(), salt);
+        decryptedBuffer = await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: iv as BufferSource,
+          },
+          trimmedKey,
+          ciphertext as BufferSource
+        );
+      } catch {
+        throw new Error('Unable to decrypt. Check the password or audio file.');
+      }
+    } else {
+      throw new Error('Unable to decrypt. Check the password or audio file.');
+    }
+  }
 
+  try {
     const decoder = new TextDecoder('utf-8', { fatal: true });
     return decoder.decode(decryptedBuffer);
-  } catch (err: unknown) {
-    // If decryption fails in AES-GCM, it is either wrong password or authentication tag mismatch
-    throw new Error('Incorrect password. The encrypted message could not be opened.');
+  } catch {
+    throw new Error('Failed to reconstruct decrypted message.');
   }
 }
 
@@ -313,14 +335,14 @@ export function inspectPayloadInfo(payload: Uint8Array): PayloadInfo {
   let offset = 34;
 
   if (offset + 2 > payload.length) {
-    throw new Error('File appears to be corrupted or incomplete.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   const filenameLen = view.getUint16(offset, false);
   offset += 2;
 
   if (offset + filenameLen + 2 > payload.length) {
-    throw new Error('File appears to be corrupted or incomplete.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   const filenameBytes = payload.subarray(offset, offset + filenameLen);
@@ -332,7 +354,7 @@ export function inspectPayloadInfo(payload: Uint8Array): PayloadInfo {
   offset += 2;
 
   if (offset + mimeLen + 4 > payload.length) {
-    throw new Error('File appears to be corrupted or incomplete.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   const mimeBytes = payload.subarray(offset, offset + mimeLen);
@@ -374,7 +396,7 @@ export async function encryptFile(
   password: string,
   onProgress?: (step: string, percent: number) => void
 ): Promise<Uint8Array> {
-  if (!fileBytes || fileBytes.byteLength === 0) {
+  if (!fileBytes) {
     throw new Error('Please select a valid file first.');
   }
   if (!password || password.length === 0) {
@@ -488,7 +510,7 @@ export async function decryptFilePayload(
 
   // Minimum size check: Magic(4) + Ver(1) + Alg(1) + Salt(16) + IV(12) + NameLen(2) + MimeLen(2) + OrigSize(4) + CipherLen(4) + Tag(16) + CRC(4) = 66 bytes
   if (!payload || payload.length < 66) {
-    throw new Error('This does not appear to be a valid QBS Secure Sound file.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   onProgress?.('Verifying container integrity...', 20);
@@ -500,7 +522,7 @@ export async function decryptFilePayload(
     payload[2] !== MAGIC_HEADER_FILE[2] ||
     payload[3] !== MAGIC_HEADER_FILE[3]
   ) {
-    throw new Error('This does not appear to be a valid QBS Secure Sound file.');
+    throw new Error('The audio does not contain a valid QBS secure payload.');
   }
 
   const version = payload[4];
@@ -525,7 +547,7 @@ export async function decryptFilePayload(
   const filenameLen = view.getUint16(offset, false);
   offset += 2;
   if (offset + filenameLen > payload.length) {
-    throw new Error('File appears to be corrupted or incomplete.');
+    throw new Error('Failed to reconstruct decrypted file.');
   }
   const filenameBytes = payload.subarray(offset, offset + filenameLen);
   offset += filenameLen;
@@ -535,7 +557,7 @@ export async function decryptFilePayload(
   const mimeLen = view.getUint16(offset, false);
   offset += 2;
   if (offset + mimeLen > payload.length) {
-    throw new Error('File appears to be corrupted or incomplete.');
+    throw new Error('Failed to reconstruct decrypted file.');
   }
   const mimeBytes = payload.subarray(offset, offset + mimeLen);
   offset += mimeLen;
@@ -548,7 +570,7 @@ export async function decryptFilePayload(
   offset += 4;
 
   if (offset + ciphertextLen + 4 !== payload.length) {
-    throw new Error('File appears to be corrupted or incomplete.');
+    throw new Error('Failed to reconstruct decrypted file.');
   }
 
   const ciphertext = payload.slice(offset, offset + ciphertextLen);
@@ -560,23 +582,18 @@ export async function decryptFilePayload(
   const calculatedCrc = calculateCRC32(dataForCrc);
 
   if (storedCrc !== calculatedCrc) {
-    throw new Error('File appears to be corrupted or incomplete.');
+    throw new Error('Integrity check failed. The encrypted data has been altered.');
   }
 
   onProgress?.('Deriving decryption key...', 50);
 
-  // Derive AES key
-  let key: CryptoKey;
-  try {
-    key = await deriveKeyFromPassword(password, salt);
-  } catch (err) {
-    throw new Error('Unable to decrypt. Check the password or QBS sound.');
-  }
-
-  onProgress?.('Decrypting file with AES-256-GCM...', 75);
+  // Derive AES key and decrypt with primary password or trimmed fallback
+  let decryptedBuffer: ArrayBuffer | null = null;
 
   try {
-    const decryptedBuffer = await crypto.subtle.decrypt(
+    const key = await deriveKeyFromPassword(password, salt);
+    onProgress?.('Decrypting file with AES-256-GCM...', 75);
+    decryptedBuffer = await crypto.subtle.decrypt(
       {
         name: 'AES-GCM',
         iv: iv as BufferSource,
@@ -584,9 +601,31 @@ export async function decryptFilePayload(
       key,
       ciphertext as BufferSource
     );
+  } catch {
+    // If decryption fails and password has leading/trailing whitespace, try trimmed password
+    if (password.trim() !== password && password.trim().length > 0) {
+      try {
+        const trimmedKey = await deriveKeyFromPassword(password.trim(), salt);
+        onProgress?.('Decrypting file with AES-256-GCM...', 75);
+        decryptedBuffer = await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: iv as BufferSource,
+          },
+          trimmedKey,
+          ciphertext as BufferSource
+        );
+      } catch {
+        throw new Error('Unable to decrypt. Check the password or audio file.');
+      }
+    } else {
+      throw new Error('Unable to decrypt. Check the password or audio file.');
+    }
+  }
 
-    onProgress?.('Reconstructing original file...', 95);
+  onProgress?.('Reconstructing original file...', 95);
 
+  try {
     const data = new Uint8Array(decryptedBuffer);
 
     // Create safe Blob and Object URL
@@ -603,9 +642,8 @@ export async function decryptFilePayload(
       blob,
       objectUrl,
     };
-  } catch (err: unknown) {
-    // If decryption fails in AES-GCM (wrong password or altered ciphertext)
-    throw new Error('Unable to decrypt. Check the password or QBS sound.');
+  } catch {
+    throw new Error('Failed to reconstruct decrypted file.');
   }
 }
 

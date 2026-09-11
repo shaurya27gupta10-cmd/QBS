@@ -19,11 +19,12 @@ export default function App() {
     blob: Blob;
     filename: string;
     payload?: Uint8Array;
+    password?: string;
   } | null>(null);
 
   // Handle Test Decode callback from EncodeView
-  const handleTestDecode = (blob: Blob, filename: string, payload: Uint8Array) => {
-    setTestDecodeFile({ blob, filename, payload });
+  const handleTestDecode = (blob: Blob, filename: string, payload: Uint8Array, password?: string) => {
+    setTestDecodeFile({ blob, filename, payload, password });
     setActiveTab('decode');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };

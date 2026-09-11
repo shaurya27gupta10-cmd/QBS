@@ -13,7 +13,7 @@ import { GeneratedSound } from '../types';
 import { FileEncodeTab } from './FileEncodeTab';
 
 interface EncodeViewProps {
-  onTestDecode: (blob: Blob, filename: string, payload: Uint8Array) => void;
+  onTestDecode: (blob: Blob, filename: string, payload: Uint8Array, password?: string) => void;
 }
 
 export function EncodeView({ onTestDecode }: EncodeViewProps) {
@@ -568,7 +568,7 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
 
                 <button
                   id="test-decode-btn"
-                  onClick={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload)}
+                  onClick={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password)}
                   className="w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold text-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 min-h-[44px]"
                 >
                   <FlaskConical className="w-4 h-4 text-emerald-600" />
