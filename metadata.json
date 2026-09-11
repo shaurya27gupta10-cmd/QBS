@@ -1,0 +1,6 @@
+{
+  "name": "QBS Secure Sound",
+  "description": "Turn your private message into a secure sound. Client-side AES-GCM encryption with digital audio and QR code encoding.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
