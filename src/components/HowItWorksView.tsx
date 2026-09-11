@@ -9,19 +9,19 @@ export function HowItWorksView({ setActiveTab }: HowItWorksViewProps) {
   const steps = [
     {
       step: '01',
-      title: 'Type Message',
-      subtitle: 'Compose your private note',
-      description: 'You compose your message locally in the browser. No keystrokes, metadata, or drafts are ever transmitted to any external server or saved in persistent browser storage.',
+      title: 'Select Message or File',
+      subtitle: 'Compose text or choose media/document',
+      description: 'You select a text message, photo (JPG, PNG, WEBP), video (MP4), audio (MP3, WAV), document (PDF, TXT, DOCX), or binary file locally in the browser. Plaintext data is never transmitted to any external server.',
       icon: <Type className="w-6 h-6 text-blue-600" />,
-      detail: 'Character count & input validation run strictly in-memory.',
+      detail: 'Runs client-side in-memory with safe browser Blob isolation.',
     },
     {
       step: '02',
       title: 'Encrypt with Password',
       subtitle: 'PBKDF2 key derivation & AES-256-GCM',
-      description: 'The Web Crypto API draws a cryptographically secure 16-byte random salt and 12-byte random IV. PBKDF2 runs 100,000 iterations of SHA-256 to derive a 256-bit encryption key.',
+      description: 'The Web Crypto API generates a cryptographically secure 16-byte random salt and 12-byte random IV. PBKDF2 runs 100,000 iterations of SHA-256 to derive a 256-bit key to encrypt the payload.',
       icon: <Lock className="w-6 h-6 text-blue-600" />,
-      detail: 'Includes a 128-bit authentication tag and CRC32 payload checksum.',
+      detail: 'Includes file metadata, 128-bit authentication tag, and CRC32 checksum.',
     },
     {
       step: '03',
@@ -153,7 +153,7 @@ export function HowItWorksView({ setActiveTab }: HowItWorksViewProps) {
           onClick={() => setActiveTab('encode')}
           className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
         >
-          <span>Try Encoding a Message</span>
+          <span>Try Encoding a Message or File</span>
           <ArrowRight className="w-4 h-4" />
         </button>
       </div>

@@ -2,19 +2,22 @@ import { useState, useRef, useEffect, type ChangeEvent } from 'react';
 import { 
   Lock, Eye, EyeOff, Play, Pause, Download, Share2, 
   RotateCcw, QrCode, Check, AlertCircle, Sparkles, 
-  FileAudio, Volume2, ShieldCheck, CheckCircle2, FlaskConical 
+  FileAudio, Volume2, ShieldCheck, CheckCircle2, FlaskConical,
+  MessageSquare, FolderLock
 } from 'lucide-react';
 import { encryptMessage } from '../lib/crypto';
 import { synthesizeFskPcm, buildWavFile, generateFilename, extractPayloadFromWav } from '../lib/audioCodec';
 import { generateEncryptedQrCode, QrResult } from '../lib/qr';
 import { AudioVisualizer } from './AudioVisualizer';
 import { GeneratedSound } from '../types';
+import { FileEncodeTab } from './FileEncodeTab';
 
 interface EncodeViewProps {
   onTestDecode: (blob: Blob, filename: string, payload: Uint8Array) => void;
 }
 
 export function EncodeView({ onTestDecode }: EncodeViewProps) {
+  const [encodeMode, setEncodeMode] = useState<'message' | 'file'>('message');
   const [message, setMessage] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -247,22 +250,57 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
 
   return (
     <div className="py-6 sm:py-10 max-w-3xl mx-auto px-4 sm:px-6">
+      {/* Top Mode Tabs: [ 💬 Message ] [ 📁 File ] */}
+      <div className="flex p-1 bg-slate-100 rounded-2xl max-w-xs mb-6 border border-slate-200">
+        <button
+          id="mode-message-btn"
+          type="button"
+          onClick={() => setEncodeMode('message')}
+          className={`flex-1 py-2 px-3 text-xs sm:text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 ${
+            encodeMode === 'message'
+              ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <MessageSquare className="w-4 h-4 text-blue-600" />
+          <span>Message</span>
+        </button>
+        <button
+          id="mode-file-btn"
+          type="button"
+          onClick={() => setEncodeMode('file')}
+          className={`flex-1 py-2 px-3 text-xs sm:text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 ${
+            encodeMode === 'file'
+              ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <FolderLock className="w-4 h-4 text-blue-600" />
+          <span>File</span>
+        </button>
+      </div>
+
       {/* Header */}
-      <div className="mb-8 text-center sm:text-left">
+      <div className="mb-6 text-center sm:text-left">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold mb-2">
           <Lock className="w-3.5 h-3.5" />
           <span>AES-256-GCM + PBKDF2 Encoder</span>
         </div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-          Encode Message
+          {encodeMode === 'message' ? 'Encode Message' : 'Encode File'}
         </h1>
         <p className="mt-1 text-sm sm:text-base text-slate-600">
-          Protect your message and turn it into a secure sound.
+          {encodeMode === 'message'
+            ? 'Protect your message and turn it into a secure sound.'
+            : 'Protect your file and turn it into a secure sound.'}
         </p>
       </div>
 
-      {/* Main Card */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 sm:p-8">
+      {encodeMode === 'file' ? (
+        <FileEncodeTab onTestDecode={onTestDecode} />
+      ) : (
+        /* Main Message Card */
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 sm:p-8">
         {!generatedSound ? (
           /* Input Form */
           <div className="space-y-6">
@@ -563,6 +601,7 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
           </div>
         )}
       </div>
+      )}
 
       {/* QR Code Modal / Drawer */}
       {showQrModal && qrResult && (

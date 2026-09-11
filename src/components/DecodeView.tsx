@@ -2,11 +2,14 @@ import { useState, useRef, useEffect, useCallback, type ChangeEvent, type DragEv
 import { 
   KeyRound, Upload, FileAudio, Play, Pause, Copy, 
   Download, Trash2, AlertCircle, CheckCircle2, Eye, EyeOff, 
-  Sparkles, Check, ArrowRight, ShieldAlert 
+  Sparkles, Check, ArrowRight, ShieldAlert, FolderLock, 
+  MessageSquare, Image, Video, Music, FileText, File, 
+  Share2, RotateCcw, ShieldCheck, CheckCheck 
 } from 'lucide-react';
 import { extractPayloadFromWav } from '../lib/audioCodec';
-import { decryptPayload, base64ToBytes } from '../lib/crypto';
+import { decryptPayload, decryptFilePayload, base64ToBytes, inspectPayloadInfo, PayloadInfo } from '../lib/crypto';
 import { AudioVisualizer } from './AudioVisualizer';
+import { DecryptedFileResult } from '../types';
 
 interface DecodeViewProps {
   initialFile?: {
@@ -24,14 +27,22 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   const [fileName, setFileName] = useState<string>('');
   const [fileSize, setFileSize] = useState<number>(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  
+  const [extractedRawPayload, setExtractedRawPayload] = useState<Uint8Array | null>(null);
+
+  // Automatic Type Detection State
+  const [detectedInfo, setDetectedInfo] = useState<PayloadInfo | null>(null);
+
   // Password & Decryption State
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // Results
   const [decryptedMessage, setDecryptedMessage] = useState<string | null>(null);
+  const [decryptedFile, setDecryptedFile] = useState<DecryptedFileResult | null>(null);
+
   const [copied, setCopied] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -40,33 +51,45 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [audioDuration, setAudioDuration] = useState<number>(0);
 
-  // If initial file is provided via "Test Decode" from EncodeView
-  useEffect(() => {
-    if (initialFile) {
-      setFileBlob(initialFile.blob);
-      setFileName(initialFile.filename);
-      setFileSize(initialFile.blob.size);
-      const url = URL.createObjectURL(initialFile.blob);
-      setAudioUrl(url);
-      setDecryptedMessage(null);
-      setError(null);
-    }
-  }, [initialFile]);
-
   // Clean up object URLs
   useEffect(() => {
     return () => {
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-      }
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      if (decryptedFile?.objectUrl) URL.revokeObjectURL(decryptedFile.objectUrl);
     };
-  }, [audioUrl]);
+  }, [audioUrl, decryptedFile]);
 
-  const handleFileProcess = useCallback((file: File | Blob, name: string) => {
+  // Format bytes helper
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  // Inspect payload helper
+  const analyzePayloadBytes = (payload: Uint8Array) => {
+    try {
+      const info = inspectPayloadInfo(payload);
+      setDetectedInfo(info);
+      setExtractedRawPayload(payload);
+      return info;
+    } catch (err) {
+      setDetectedInfo(null);
+      return null;
+    }
+  };
+
+  const handleFileProcess = useCallback(async (file: File | Blob, name: string) => {
     setError(null);
     setDecryptedMessage(null);
+    if (decryptedFile?.objectUrl) URL.revokeObjectURL(decryptedFile.objectUrl);
+    setDecryptedFile(null);
+    setDetectedInfo(null);
+    setExtractedRawPayload(null);
 
-    // Basic format check
+    // Format check
     if (name && !name.toLowerCase().endsWith('.wav') && file.type && !file.type.includes('audio') && !file.type.includes('wav')) {
       setError('This audio format is not supported. Please use a QBS WAV file.');
       return;
@@ -84,7 +107,42 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     }
     const url = URL.createObjectURL(file);
     setAudioUrl(url);
-  }, [audioUrl]);
+
+    // Pre-parse the WAV container to detect payload type before password entry
+    try {
+      const buffer = await file.arrayBuffer();
+      const payload = extractPayloadFromWav(buffer);
+      analyzePayloadBytes(payload);
+    } catch {
+      // Ignore if user hasn't pressed decode yet; handleDecode will report full error
+    }
+  }, [audioUrl, decryptedFile]);
+
+  // If initial file is provided via "Test Decode" from EncodeView
+  useEffect(() => {
+    if (initialFile) {
+      handleFileProcess(initialFile.blob, initialFile.filename);
+    }
+  }, [initialFile, handleFileProcess]);
+
+  // Handle QR text change and pre-detect
+  const handleQrTextChange = (val: string) => {
+    setQrText(val);
+    setError(null);
+    setDecryptedMessage(null);
+    setDecryptedFile(null);
+    const clean = val.trim().replace(/^QBS[1F]:/i, '');
+    if (clean.length > 20) {
+      try {
+        const raw = base64ToBytes(clean);
+        analyzePayloadBytes(raw);
+      } catch {
+        setDetectedInfo(null);
+      }
+    } else {
+      setDetectedInfo(null);
+    }
+  };
 
   // Drag & drop handlers
   const handleDragOver = (e: DragEvent) => {
@@ -131,6 +189,8 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   const handleDecode = async () => {
     setError(null);
     setDecryptedMessage(null);
+    if (decryptedFile?.objectUrl) URL.revokeObjectURL(decryptedFile.objectUrl);
+    setDecryptedFile(null);
 
     if (sourceMode === 'audio' && !fileBlob) {
       setError('Please select or upload a QBS Secure Sound audio file first.');
@@ -154,21 +214,21 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
 
       if (sourceMode === 'audio') {
         // Step 1: Analyze audio
-        setLoadingStep('Analyzing secure sound...');
-        await new Promise((r) => setTimeout(r, 180));
+        setLoadingStep('Analyzing sound...');
+        await new Promise((r) => setTimeout(r, 160));
 
         const arrayBuffer = await fileBlob!.arrayBuffer();
 
-        // Step 2: Demodulate / Recover encrypted payload
+        // Step 2: Extract encrypted payload from RIFF WAV container
         setLoadingStep('Recovering encrypted payload...');
-        await new Promise((r) => setTimeout(r, 180));
+        await new Promise((r) => setTimeout(r, 160));
 
         payload = extractPayloadFromWav(arrayBuffer);
       } else {
         setLoadingStep('Parsing encrypted QR payload...');
-        await new Promise((r) => setTimeout(r, 150));
+        await new Promise((r) => setTimeout(r, 140));
 
-        const cleanStr = qrText.trim().replace(/^QBS1:/i, '');
+        const cleanStr = qrText.trim().replace(/^QBS[1F]:/i, '');
         try {
           payload = base64ToBytes(cleanStr);
         } catch {
@@ -176,13 +236,33 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
         }
       }
 
-      // Step 3: Decrypt using Web Crypto PBKDF2 + AES-GCM
-      setLoadingStep('Decrypting message...');
-      await new Promise((r) => setTimeout(r, 220));
+      // Step 3: Inspect payload type
+      const info = inspectPayloadInfo(payload);
+      setDetectedInfo(info);
 
-      const plaintext = await decryptPayload(payload, password);
+      // Step 4: Branch by type
+      if (info.type === 'file') {
+        setLoadingStep('Verifying integrity...');
+        await new Promise((r) => setTimeout(r, 120));
 
-      setDecryptedMessage(plaintext);
+        setLoadingStep('Decrypting file...');
+        const fileResult = await decryptFilePayload(payload, password, (step) => {
+          setLoadingStep(step);
+        });
+
+        setLoadingStep('Reconstructing original file...');
+        await new Promise((r) => setTimeout(r, 120));
+
+        setDecryptedFile(fileResult);
+      } else {
+        // Message mode
+        setLoadingStep('Verifying integrity...');
+        await new Promise((r) => setTimeout(r, 120));
+
+        setLoadingStep('Decrypting message...');
+        const plaintext = await decryptPayload(payload, password);
+        setDecryptedMessage(plaintext);
+      }
     } catch (err: unknown) {
       console.error(err);
       if (err instanceof Error) {
@@ -218,12 +298,50 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     URL.revokeObjectURL(url);
   };
 
-  // Clear message and state
+  // Download Decrypted File
+  const handleDownloadFile = () => {
+    if (!decryptedFile) return;
+    const a = document.createElement('a');
+    a.href = decryptedFile.objectUrl;
+    a.download = decryptedFile.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  // Share Decrypted File
+  const handleShareFile = async () => {
+    if (!decryptedFile) return;
+    try {
+      const shareData = new File([decryptedFile.data], decryptedFile.filename, {
+        type: decryptedFile.mimeType,
+      });
+      if (navigator.canShare && navigator.canShare({ files: [shareData] })) {
+        await navigator.share({
+          files: [shareData],
+          title: decryptedFile.filename,
+          text: `Decrypted file (${decryptedFile.filename})`,
+        });
+      } else {
+        handleDownloadFile();
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        handleDownloadFile();
+      }
+    }
+  };
+
+  // Clear state
   const handleClear = () => {
+    if (decryptedFile?.objectUrl) URL.revokeObjectURL(decryptedFile.objectUrl);
     setDecryptedMessage(null);
+    setDecryptedFile(null);
     setPassword('');
     setError(null);
   };
+
+  const isFileType = detectedInfo?.type === 'file';
 
   return (
     <div className="py-6 sm:py-10 max-w-3xl mx-auto px-4 sm:px-6">
@@ -231,13 +349,13 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
       <div className="mb-8 text-center sm:text-left">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold mb-2">
           <KeyRound className="w-3.5 h-3.5" />
-          <span>Demodulator & Decryptor</span>
+          <span>Demodulator &amp; Decryptor</span>
         </div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
           Decode Secure Sound
         </h1>
         <p className="mt-1 text-sm sm:text-base text-slate-600">
-          Recover your encrypted message using the QBS sound and password.
+          Recover your encrypted message or file using the QBS sound and password.
         </p>
       </div>
 
@@ -311,14 +429,14 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
           /* QR Text Payload Mode */
           <div>
             <label htmlFor="decode-qr-input" className="block text-sm font-semibold text-slate-800 mb-2">
-              Paste Encrypted QR Code Payload (QBS1:...)
+              Paste Encrypted QR Code Payload (QBS1:... or QBSF:...)
             </label>
             <textarea
               id="decode-qr-input"
               rows={4}
               value={qrText}
-              onChange={(e) => setQrText(e.target.value)}
-              placeholder="Paste the scanned QR code string (e.g. QBS1:UUIu...)"
+              onChange={(e) => handleQrTextChange(e.target.value)}
+              placeholder="Paste the scanned QR code string (e.g. QBS1:UUIu... or QBSF:QUJTR...)"
               className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent text-slate-900 font-mono text-xs sm:text-sm"
             />
             <p className="mt-1.5 text-xs text-slate-500">
@@ -340,7 +458,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                     {fileName || 'QBS-Secure-Sound.wav'}
                   </div>
                   <div className="text-xs text-slate-500">
-                    {(fileSize / 1024).toFixed(1)} KB &bull; Audio WAV Container
+                    {formatBytes(fileSize)} &bull; Audio WAV Container
                   </div>
                 </div>
               </div>
@@ -369,6 +487,29 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                 <AudioVisualizer audioElement={audioRef.current} isPlaying={isPlaying} />
               </>
             )}
+          </div>
+        )}
+
+        {/* Automatic Payload Type Detection Badge */}
+        {detectedInfo && (
+          <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-3 text-xs sm:text-sm text-blue-900">
+            {detectedInfo.type === 'file' ? (
+              <FolderLock className="w-5 h-5 text-blue-600 flex-shrink-0" />
+            ) : (
+              <MessageSquare className="w-5 h-5 text-blue-600 flex-shrink-0" />
+            )}
+            <div className="truncate">
+              {detectedInfo.type === 'file' ? (
+                <span>
+                  <strong className="font-semibold text-blue-950">QBS File detected:</strong>{' '}
+                  {detectedInfo.filename || 'Encrypted File'} ({formatBytes(detectedInfo.originalSizeBytes || 0)})
+                </span>
+              ) : (
+                <span>
+                  <strong className="font-semibold text-blue-950">QBS Message detected</strong> (Encrypted text payload)
+                </span>
+              )}
+            </div>
           </div>
         )}
 
@@ -403,7 +544,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
 
         {/* Error Notification */}
         {error && (
-          <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-sm flex items-start gap-2.5 animate-shake">
+          <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-sm flex items-start gap-2.5">
             <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
             <div>
               <span className="font-semibold block">Decryption Failed</span>
@@ -414,7 +555,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
 
         {/* Loading Progress State */}
         {isLoading && (
-          <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 flex items-center gap-3 animate-pulse">
+          <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 flex items-center gap-3">
             <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin flex-shrink-0" />
             <div className="text-sm font-semibold">
               {loadingStep || 'Processing audio stream...'}
@@ -422,7 +563,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
           </div>
         )}
 
-        {/* Action Button */}
+        {/* Action Button (Dynamic label: Decode Message or Decode File) */}
         <div>
           <button
             id="decode-message-btn"
@@ -435,8 +576,8 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
               <span>Decrypting...</span>
             ) : (
               <>
-                <KeyRound className="w-5 h-5" />
-                <span>Decode Message</span>
+                {isFileType ? <FolderLock className="w-5 h-5" /> : <KeyRound className="w-5 h-5" />}
+                <span>{isFileType ? 'Decode File' : 'Decode Message'}</span>
               </>
             )}
           </button>
@@ -444,7 +585,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
 
         {/* Decrypted Message Success Display */}
         {decryptedMessage !== null && (
-          <div className="pt-6 border-t border-slate-200 space-y-4 animate-fade-in">
+          <div className="pt-6 border-t border-slate-200 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-5 h-5 text-emerald-600" />
@@ -495,12 +636,131 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                 <span>Clear Message</span>
               </button>
             </div>
-
-            <p className="text-xs text-slate-500 pt-1">
-              Never store the decrypted message permanently unless you explicitly choose to download or copy it.
-            </p>
           </div>
         )}
+
+        {/* Decrypted File Success Display */}
+        {decryptedFile !== null && (
+          <div className="pt-6 border-t border-slate-200 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                <span className="text-base font-bold text-slate-900">
+                  File successfully decrypted.
+                </span>
+              </div>
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
+                Integrity Verified &bull; Exact Byte Match
+              </span>
+            </div>
+
+            {/* File Info Card */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 flex-shrink-0">
+                  {decryptedFile.mimeType.startsWith('image/') ? (
+                    <Image className="w-5 h-5" />
+                  ) : decryptedFile.mimeType.startsWith('video/') ? (
+                    <Video className="w-5 h-5" />
+                  ) : decryptedFile.mimeType.startsWith('audio/') ? (
+                    <Music className="w-5 h-5" />
+                  ) : decryptedFile.mimeType.includes('pdf') || decryptedFile.mimeType.includes('document') ? (
+                    <FileText className="w-5 h-5" />
+                  ) : (
+                    <File className="w-5 h-5" />
+                  )}
+                </div>
+                <div className="truncate">
+                  <h4 className="text-sm font-bold text-slate-900 truncate">
+                    {decryptedFile.filename}
+                  </h4>
+                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <span className="font-semibold text-slate-700">{formatBytes(decryptedFile.sizeBytes)}</span>
+                    <span>&bull;</span>
+                    <span className="truncate">{decryptedFile.mimeType}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Type-Specific Preview */}
+              <div className="rounded-xl border border-slate-200 bg-white p-3 overflow-hidden">
+                {decryptedFile.mimeType.startsWith('image/') ? (
+                  <div className="flex justify-center max-h-72 overflow-hidden rounded-lg">
+                    <img
+                      src={decryptedFile.objectUrl}
+                      alt={decryptedFile.filename}
+                      className="max-h-72 object-contain rounded-lg shadow-2xs"
+                    />
+                  </div>
+                ) : decryptedFile.mimeType.startsWith('video/') ? (
+                  <video
+                    src={decryptedFile.objectUrl}
+                    controls
+                    className="w-full max-h-72 rounded-lg bg-black"
+                  />
+                ) : decryptedFile.mimeType.startsWith('audio/') ? (
+                  <audio
+                    src={decryptedFile.objectUrl}
+                    controls
+                    className="w-full mt-1"
+                  />
+                ) : decryptedFile.mimeType.includes('pdf') ? (
+                  <iframe
+                    src={decryptedFile.objectUrl}
+                    title={decryptedFile.filename}
+                    className="w-full h-80 rounded-lg border border-slate-200"
+                  />
+                ) : (
+                  <div className="flex items-center gap-3 py-3 px-3 bg-slate-50 rounded-lg text-xs text-slate-600">
+                    <File className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                    <div>
+                      <span className="font-semibold text-slate-800 block">Binary / Document File</span>
+                      <span>Decrypted file is ready for download.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* File Actions */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <div className="flex items-center gap-2">
+                <button
+                  id="download-file-btn"
+                  onClick={handleDownloadFile}
+                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold shadow-xs transition-colors min-h-[40px]"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download File</span>
+                </button>
+
+                <button
+                  id="share-file-btn"
+                  onClick={handleShareFile}
+                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-xs sm:text-sm font-semibold shadow-xs transition-colors min-h-[40px]"
+                >
+                  <Share2 className="w-4 h-4 text-blue-600" />
+                  <span>Share File</span>
+                </button>
+              </div>
+
+              <button
+                id="clear-file-btn"
+                onClick={handleClear}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 rounded-lg transition-colors ml-auto"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Decode Another</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Security Statement */}
+      <div className="mt-6 p-4 rounded-xl bg-slate-100/60 border border-slate-200 flex items-center gap-3 text-xs text-slate-600">
+        <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+        <span>Decryption runs entirely client-side using Web Crypto API. Your decrypted files never leave your browser.</span>
       </div>
     </div>
   );

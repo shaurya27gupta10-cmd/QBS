@@ -32,12 +32,31 @@ export function synthesizeFskPcm(payload: Uint8Array): {
   pcmSamples: Int16Array;
   durationSeconds: number;
 } {
-  // Determine symbol duration based on payload size so the audio is audible,
-  // distinct, and not excessively long (typically 2.0 to 5.0 seconds).
-  const totalBits = payload.length * 8;
-  // Dynamic duration per bit: between 3ms (for large payloads) and 8ms (for short)
-  const bitDurationSec = Math.max(0.003, Math.min(0.008, 3.0 / Math.max(totalBits, 1)));
-  const samplesPerBit = Math.max(32, Math.floor(SAMPLE_RATE * bitDurationSec));
+  // For telemetry audio playback: if payload is large (such as encrypted files),
+  // modulate the cryptographic header, distributed sample frames, and CRC chunk (up to 512 bytes)
+  // so audio synthesis is fast and safe from memory exhaustion (audio stays 2.5 - 4.5s)
+  const maxModBytes = 512;
+  let bytesToModulate: Uint8Array;
+  if (payload.length <= maxModBytes) {
+    bytesToModulate = payload;
+  } else {
+    bytesToModulate = new Uint8Array(maxModBytes);
+    // Copy first 128 bytes (magic, version, salt, iv, metadata)
+    bytesToModulate.set(payload.subarray(0, 128), 0);
+    // Evenly sample the middle ciphertext
+    const step = Math.max(1, Math.floor((payload.length - 144) / (maxModBytes - 144)));
+    for (let i = 128; i < maxModBytes - 16; i++) {
+      const srcIdx = Math.min(payload.length - 17, 128 + (i - 128) * step);
+      bytesToModulate[i] = payload[srcIdx];
+    }
+    // Copy last 16 bytes (auth tag & CRC32)
+    bytesToModulate.set(payload.subarray(payload.length - 16), maxModBytes - 16);
+  }
+
+  // Determine symbol duration based on modulated bytes
+  const totalBits = bytesToModulate.length * 8;
+  const bitDurationSec = Math.max(0.0006, Math.min(0.004, 3.2 / Math.max(totalBits, 1)));
+  const samplesPerBit = Math.max(24, Math.floor(SAMPLE_RATE * bitDurationSec));
 
   const pilotSamples = Math.floor(SAMPLE_RATE * 0.20); // 200ms pilot
   const endSamples = Math.floor(SAMPLE_RATE * 0.15);   // 150ms end marker
@@ -49,7 +68,6 @@ export function synthesizeFskPcm(payload: Uint8Array): {
 
   // 1. Pilot Tone (2400 Hz) with fade-in
   for (let i = 0; i < pilotSamples; i++) {
-    const t = i / SAMPLE_RATE;
     const envelope = Math.min(1, i / (SAMPLE_RATE * 0.03)); // 30ms fade-in
     phase += (2 * Math.PI * FREQ_PILOT) / SAMPLE_RATE;
     const sampleVal = Math.sin(phase) * 0.7 * envelope;
@@ -57,18 +75,16 @@ export function synthesizeFskPcm(payload: Uint8Array): {
   }
 
   // 2. Data Bits (FSK modulated)
-  for (let byteIdx = 0; byteIdx < payload.length; byteIdx++) {
-    const byte = payload[byteIdx];
+  for (let byteIdx = 0; byteIdx < bytesToModulate.length; byteIdx++) {
+    const byte = bytesToModulate[byteIdx];
     for (let bitIdx = 7; bitIdx >= 0; bitIdx--) {
       const bit = (byte >> bitIdx) & 1;
       const freq = bit === 1 ? FREQ_MARK : FREQ_SPACE;
 
       for (let s = 0; s < samplesPerBit; s++) {
         phase += (2 * Math.PI * freq) / SAMPLE_RATE;
-        // Keep phase within [0, 2pi]
         if (phase > 2 * Math.PI) phase -= 2 * Math.PI;
 
-        // Subtle raised-cosine windowing at bit transitions for acoustic smoothness
         let bitEnv = 1.0;
         const rampLen = Math.floor(samplesPerBit * 0.15);
         if (s < rampLen) {
@@ -78,7 +94,6 @@ export function synthesizeFskPcm(payload: Uint8Array): {
           bitEnv = 0.5 * (1 - Math.cos((Math.PI * remaining) / rampLen));
         }
 
-        // Generate tone with a subtle secondary harmonic for that crisp telemetry sound
         const sampleVal = (Math.sin(phase) * 0.8 + Math.sin(2 * phase) * 0.1) * bitEnv;
         pcm[sampleIndex++] = Math.floor(sampleVal * 32767);
       }
@@ -87,7 +102,7 @@ export function synthesizeFskPcm(payload: Uint8Array): {
 
   // 3. End Marker (1600 Hz) with fade-out
   for (let i = 0; i < endSamples; i++) {
-    const envelope = Math.max(0, 1 - i / endSamples); // fade-out
+    const envelope = Math.max(0, 1 - i / endSamples);
     phase += (2 * Math.PI * FREQ_END) / SAMPLE_RATE;
     const sampleVal = Math.sin(phase) * 0.6 * envelope;
     pcm[sampleIndex++] = Math.floor(sampleVal * 32767);

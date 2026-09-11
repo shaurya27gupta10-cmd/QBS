@@ -1,5 +1,5 @@
 import QRCode from 'qrcode';
-import { bytesToBase64 } from './crypto';
+import { bytesToBase64, detectPayloadType } from './crypto';
 
 // Maximum payload size for reliable mobile QR code scanning
 export const MAX_QR_PAYLOAD_BYTES = 800;
@@ -17,20 +17,29 @@ export interface QrResult {
  */
 export async function generateEncryptedQrCode(payload: Uint8Array): Promise<QrResult> {
   const sizeBytes = payload.length;
+  let isFile = false;
+  try {
+    isFile = detectPayloadType(payload) === 'file';
+  } catch {
+    // ignore
+  }
 
   // Check if payload exceeds reliable QR code density
   if (sizeBytes > MAX_QR_PAYLOAD_BYTES) {
     return {
       dataUrl: null,
       fitsQr: false,
-      warning: 'Message is too large for a single QR code. Use the QBS Sound file.',
+      warning: isFile
+        ? 'QR Code is not suitable for this file size. Use the QBS Secure Sound.'
+        : 'Message is too large for a single QR code. Use the QBS Sound file.',
       sizeBytes,
     };
   }
 
   // Self-contained compact representation
   const b64 = bytesToBase64(payload);
-  const qrString = `QBS1:${b64}`;
+  const prefix = isFile ? 'QBSF:' : 'QBS1:';
+  const qrString = `${prefix}${b64}`;
 
   try {
     const dataUrl = await QRCode.toDataURL(qrString, {
@@ -52,8 +61,11 @@ export async function generateEncryptedQrCode(payload: Uint8Array): Promise<QrRe
     return {
       dataUrl: null,
       fitsQr: false,
-      warning: 'Failed to generate QR code. Use the QBS Sound file.',
+      warning: isFile
+        ? 'QR Code is not suitable for this file size. Use the QBS Secure Sound.'
+        : 'Failed to generate QR code. Use the QBS Sound file.',
       sizeBytes,
     };
   }
 }
+
