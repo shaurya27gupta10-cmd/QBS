@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, ChangeEvent, DragEvent } from 'react';
 import { 
   FolderLock, Upload, Image, Video, Music, FileText, 
-  File, Eye, EyeOff, Play, Pause, Download, Share2, 
+  File as FileIcon, Eye, EyeOff, Play, Pause, Download, Share2, 
   RotateCcw, QrCode, AlertCircle, CheckCircle2, 
   FlaskConical, Check, X, ShieldCheck, AlertTriangle 
 } from 'lucide-react';
@@ -507,7 +507,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
               onClick={() => openFilePicker('other')}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-700 text-slate-700 text-xs font-medium transition-colors"
             >
-              <File className="w-3.5 h-3.5 text-blue-600" />
+              <FileIcon className="w-3.5 h-3.5 text-blue-600" />
               <span>📁 Other</span>
             </button>
           </div>
@@ -527,7 +527,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
                 ) : file.type.includes('pdf') || file.type.includes('document') || file.type.includes('text') ? (
                   <FileText className="w-5 h-5" />
                 ) : (
-                  <File className="w-5 h-5" />
+                  <FileIcon className="w-5 h-5" />
                 )}
               </div>
               <div className="truncate">

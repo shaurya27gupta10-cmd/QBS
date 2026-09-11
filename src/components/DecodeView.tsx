@@ -3,7 +3,7 @@ import {
   KeyRound, Upload, FileAudio, Play, Pause, Copy, 
   Download, Trash2, AlertCircle, CheckCircle2, Eye, EyeOff, 
   Sparkles, Check, ArrowRight, ShieldAlert, FolderLock, 
-  MessageSquare, Image, Video, Music, FileText, File, 
+  MessageSquare, Image, Video, Music, FileText, File as FileIcon, 
   Share2, RotateCcw, ShieldCheck, CheckCheck 
 } from 'lucide-react';
 import { extractPayloadFromWav } from '../lib/audioCodec';
@@ -95,7 +95,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
       return;
     }
 
-    if (file instanceof File) {
+    if (typeof window !== 'undefined' && typeof window.File !== 'undefined' && file instanceof window.File) {
       setSelectedFile(file);
     }
     setFileBlob(file);
@@ -667,7 +667,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                   ) : decryptedFile.mimeType.includes('pdf') || decryptedFile.mimeType.includes('document') ? (
                     <FileText className="w-5 h-5" />
                   ) : (
-                    <File className="w-5 h-5" />
+                    <FileIcon className="w-5 h-5" />
                   )}
                 </div>
                 <div className="truncate">
@@ -712,7 +712,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                   />
                 ) : (
                   <div className="flex items-center gap-3 py-3 px-3 bg-slate-50 rounded-lg text-xs text-slate-600">
-                    <File className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                    <FileIcon className="w-5 h-5 text-blue-600 flex-shrink-0" />
                     <div>
                       <span className="font-semibold text-slate-800 block">Binary / Document File</span>
                       <span>Decrypted file is ready for download.</span>
