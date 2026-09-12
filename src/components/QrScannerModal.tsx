@@ -2,14 +2,32 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   X,
   Camera,
-  Upload,
   RefreshCw,
   AlertCircle,
-  CheckCircle2,
   Image as ImageIcon,
-  Sparkles
+  Check
 } from 'lucide-react';
-import { scanQrFromImage, scanQrFromImageData } from '../lib/qr';
+import { scanQrFromImage, scanQrFromVideo } from '../lib/qr';
+
+function playScanBeep() {
+  try {
+    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1046.5, ctx.currentTime); // C6 clear chime
+    gain.gain.setValueAtTime(0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.12);
+  } catch {
+    // AudioContext blocked without user gesture
+  }
+}
 
 interface QrScannerModalProps {
   isOpen: boolean;
@@ -33,6 +51,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isHandledRef = useRef<boolean>(false);
 
   // Stop camera stream cleanly
   const stopCamera = () => {
@@ -50,6 +69,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   // Start camera stream
   const startCamera = async () => {
     stopCamera();
+    isHandledRef.current = false;
     setCameraError(null);
     setDetectedSuccess(false);
 
@@ -88,41 +108,47 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
     }
   };
 
-  // Scan frame loop
-  const requestScanFrame = () => {
-    if (!videoRef.current || !canvasRef.current || !streamRef.current) return;
+  // Process a scanned raw code text automatically
+  const handleScannedData = (scannedCode: string) => {
+    if (isHandledRef.current) return;
+    isHandledRef.current = true;
+
+    // Instant acoustic + haptic feedback
+    playScanBeep();
+    try {
+      navigator.vibrate?.(60);
+    } catch {
+      // ignore
+    }
+
+    setDetectedSuccess(true);
+    stopCamera();
+
+    // Automatically load into decoder and dismiss modal
+    setTimeout(() => {
+      onScanSuccess(scannedCode);
+      onClose();
+    }, 250);
+  };
+
+  // Fast continuous scan loop
+  const requestScanFrame = async () => {
+    if (!videoRef.current || !canvasRef.current || !streamRef.current || isHandledRef.current) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-    if (video.readyState === video.HAVE_ENOUGH_DATA && ctx) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const scannedCode = scanQrFromImageData(imageData);
-
-      if (scannedCode) {
-        // Haptic feedback if available
-        try {
-          navigator.vibrate?.(50);
-        } catch {
-          // ignore
-        }
-
-        setDetectedSuccess(true);
-        stopCamera();
-        setTimeout(() => {
-          onScanSuccess(scannedCode);
-          onClose();
-        }, 400);
+    if (video.readyState >= 2) {
+      const scannedCode = await scanQrFromVideo(video, canvas);
+      if (scannedCode && !isHandledRef.current) {
+        handleScannedData(scannedCode);
         return;
       }
     }
 
-    animationFrameRef.current = requestAnimationFrame(requestScanFrame);
+    if (!isHandledRef.current) {
+      animationFrameRef.current = requestAnimationFrame(requestScanFrame);
+    }
   };
 
   // Handle image file selection
@@ -133,16 +159,11 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
     try {
       const code = await scanQrFromImage(file);
       if (code) {
-        setDetectedSuccess(true);
-        stopCamera();
-        setTimeout(() => {
-          onScanSuccess(code);
-          onClose();
-        }, 400);
+        handleScannedData(code);
       } else {
         setCameraError('No valid QR code found in this image. Please ensure the QR code is clearly visible.');
       }
-    } catch (err: unknown) {
+    } catch {
       setCameraError('Failed to read image. Please try another image.');
     } finally {
       setIsProcessingImage(false);
@@ -163,7 +184,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/75 backdrop-blur-xs animate-fade-in">
       <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 space-y-4 border border-slate-200 shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -176,7 +197,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
                 Scan Encrypted QR Code
               </h3>
               <p className="text-xs text-slate-500">
-                Point your camera at a QBS QR code or upload image
+                Instant Automatic Detection
               </p>
             </div>
           </div>
@@ -196,6 +217,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
           <video
             ref={videoRef}
             className={`w-full h-full object-cover ${isScanning ? 'block' : 'hidden'}`}
+            playsInline
             muted
           />
           <canvas ref={canvasRef} className="hidden" />
@@ -210,17 +232,19 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
                 <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-4 border-l-4 border-blue-500 rounded-bl-lg" />
                 <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-4 border-r-4 border-blue-500 rounded-br-lg" />
                 {/* Aiming crosshair */}
-                <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 h-0.5 bg-blue-400/50 shadow-[0_0_8px_rgba(96,165,250,0.8)]" />
+                <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 h-0.5 bg-blue-400/60 shadow-[0_0_8px_rgba(96,165,250,0.9)]" />
               </div>
             </div>
           )}
 
           {/* Detection Success Banner */}
           {detectedSuccess && (
-            <div className="absolute inset-0 bg-emerald-950/80 backdrop-blur-xs flex flex-col items-center justify-center text-white space-y-2 p-4 text-center animate-fade-in">
-              <CheckCircle2 className="w-12 h-12 text-emerald-400 animate-bounce" />
+            <div className="absolute inset-0 bg-emerald-950/85 backdrop-blur-xs flex flex-col items-center justify-center text-white space-y-2 p-4 text-center animate-fade-in">
+              <div className="w-12 h-12 rounded-full bg-emerald-500 flex items-center justify-center shadow-lg animate-bounce">
+                <Check className="w-7 h-7 text-white stroke-[3]" />
+              </div>
               <p className="font-bold text-base text-emerald-100">QR Code Detected!</p>
-              <p className="text-xs text-emerald-200/80">Loading into decoder...</p>
+              <p className="text-xs text-emerald-200/90">Loading automatically into decoder...</p>
             </div>
           )}
 
@@ -241,6 +265,15 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
                   <span>Retry Camera</span>
                 </button>
               )}
+            </div>
+          )}
+
+          {/* Scanning Guidance Badge */}
+          {isScanning && !detectedSuccess && (
+            <div className="absolute bottom-3 inset-x-3 flex justify-center pointer-events-none">
+              <span className="px-3 py-1 rounded-full bg-slate-900/85 backdrop-blur-md text-[11px] font-medium text-slate-200 border border-slate-700/60 shadow-lg">
+                Automatic scan active &bull; Point at QBS QR code
+              </span>
             </div>
           )}
         </div>

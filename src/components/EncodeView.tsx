@@ -13,6 +13,7 @@ import { GeneratedSound } from '../types';
 import { FileEncodeTab } from './FileEncodeTab';
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
 import { ShareModal } from './ShareModal';
+import { QrModal } from './QrModal';
 
 interface EncodeViewProps {
   onTestDecode: (blob: Blob, filename: string, payload: Uint8Array, password?: string) => void;
@@ -151,7 +152,7 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
 
       // 6. Generate QR code representation
       setGenerationStep('Generating QR code representation...');
-      const qrData = await generateEncryptedQrCode(payload);
+      const qrData = await generateEncryptedQrCode(payload, 'message.txt');
       setQrResult(qrData);
 
       setGeneratedSound({
@@ -591,106 +592,25 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
       </div>
       )}
 
-      {/* QR Code Modal / Drawer */}
-      {showQrModal && qrResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <QrCode className="w-5 h-5 text-blue-600" />
-                <h3 className="font-bold text-slate-900 text-base">Encrypted QR Code</h3>
-              </div>
-              <button
-                onClick={() => setShowQrModal(false)}
-                className="text-slate-400 hover:text-slate-600 text-xl font-bold p-1 leading-none"
-              >
-                &times;
-              </button>
-            </div>
-
-            <div className="bg-blue-50/70 border border-blue-100 rounded-lg p-2.5 text-xs text-blue-900">
-              <span className="font-semibold">Security Note:</span> This QR code carries only the encrypted ciphertext, salt, and IV. It does <span className="font-bold">NOT</span> contain the password or plaintext.
-            </div>
-
-            {qrResult.fitsQr && qrResult.dataUrl ? (
-              <div className="flex flex-col items-center justify-center space-y-3">
-                <div className="p-3 bg-white border border-slate-200 rounded-xl shadow-sm">
-                  <img
-                    src={qrResult.dataUrl}
-                    alt="QBS Encrypted QR Code"
-                    className="w-56 h-56 object-contain"
-                  />
-                </div>
-                <div className="flex items-center gap-2 w-full">
-                  <button
-                    onClick={handleDownloadQr}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Save .PNG</span>
-                  </button>
-                  <button
-                    onClick={handleCopyQrPayload}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>{copiedQr ? 'Copied Code!' : 'Copy Code'}</span>
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowQrModal(false);
-                    setShareModalOpen(true);
-                  }}
-                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold transition-colors"
-                >
-                  <Share2 className="w-3.5 h-3.5" />
-                  <span>Share QR &amp; Sound Options</span>
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs space-y-2">
-                  <p className="font-semibold">
-                    {qrResult.warning || 'Message is too large for a single QR code. Use the QBS Sound file.'}
-                  </p>
-                  <p className="text-amber-700">
-                    Standard QR codes have optical density limits. You can still copy the full payload string or share the container file directly.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleCopyQrPayload}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>{copiedQr ? 'Copied Code!' : 'Copy Full Code'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowQrModal(false);
-                      setShareModalOpen(true);
-                    }}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors"
-                  >
-                    <Share2 className="w-3.5 h-3.5" />
-                    <span>Share Options</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <button
-              onClick={() => setShowQrModal(false)}
-              className="w-full py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
-            >
-              Close
-            </button>
-          </div>
-        </div>
+      {/* QR Code Modal (Unlimited, Supports Single & Sequenced Multi-Part QR codes) */}
+      {showQrModal && generatedSound && qrResult && (
+        <QrModal
+          isOpen={showQrModal}
+          onClose={() => setShowQrModal(false)}
+          qrCodeData={{
+            dataUrl: qrResult.dataUrl,
+            fitsQr: qrResult.fitsQr,
+            isSelfContained: true,
+            payloadSize: generatedSound.rawPayload.length,
+            qrPayloadString: qrResult.qrPayloadString,
+            isMultiPart: qrResult.isMultiPart,
+            frameCount: qrResult.frameCount,
+            frames: qrResult.frames,
+            warning: qrResult.warning,
+          }}
+          rawPayload={generatedSound.rawPayload}
+          filename={generatedSound.filename}
+        />
       )}
 
       {/* Unified Share Modal */}
@@ -705,7 +625,10 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
           qrDataUrl={qrResult?.dataUrl}
           fitsQr={qrResult?.fitsQr}
           qrPayloadString={qrResult?.qrPayloadString || `QBSS:${bytesToBase64(generatedSound.rawPayload)}`}
+          isMultiPart={qrResult?.isMultiPart}
+          frameCount={qrResult?.frameCount}
           onOpenInDecoder={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password)}
+          onOpenQrModal={() => setShowQrModal(true)}
         />
       )}
     </div>

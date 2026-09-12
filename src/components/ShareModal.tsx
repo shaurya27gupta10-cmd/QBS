@@ -32,7 +32,10 @@ interface ShareModalProps {
   qrDataUrl?: string | null;
   fitsQr?: boolean;
   qrPayloadString?: string;
+  isMultiPart?: boolean;
+  frameCount?: number;
   onOpenInDecoder?: () => void;
+  onOpenQrModal?: () => void;
 }
 
 export const ShareModal: React.FC<ShareModalProps> = ({
@@ -45,7 +48,10 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   qrDataUrl,
   fitsQr,
   qrPayloadString,
+  isMultiPart = false,
+  frameCount = 1,
   onOpenInDecoder,
+  onOpenQrModal,
 }) => {
   const [copiedType, setCopiedType] = useState<string | null>(null);
   const [shareStatus, setShareStatus] = useState<string | null>(null);
@@ -232,30 +238,49 @@ export const ShareModal: React.FC<ShareModalProps> = ({
               <span className="text-xs font-bold text-slate-800">Encrypted QR Code</span>
             </div>
             <span className="text-[11px] font-mono text-slate-500">
-              {fitsQr ? 'Ready to share' : 'Oversized (~2KB limit)'}
+              {isMultiPart ? `${frameCount} Sequenced Parts` : 'Optical Carrier'}
             </span>
           </div>
 
-          {fitsQr && qrDataUrl ? (
+          {qrDataUrl ? (
             <div className="space-y-3">
               <div className="flex items-center gap-3">
                 <div className="p-1.5 bg-white rounded-lg border border-slate-200 shadow-2xs flex-shrink-0">
                   <img src={qrDataUrl} alt="QR Code" className="w-16 h-16 object-contain" />
                 </div>
-                <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Compact, self-contained visual carrier. Scan directly with any camera or the built-in decoder.
-                </p>
+                <div className="text-[11px] text-slate-600 leading-relaxed space-y-0.5">
+                  <p className="font-semibold text-slate-800">
+                    Self-Contained Encrypted QR Code
+                  </p>
+                  <p className="text-slate-500">
+                    Scan directly with any camera or the built-in decoder.
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={handleShareQrImage}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-2xs transition-colors"
-                >
-                  <Share2 className="w-3.5 h-3.5" />
-                  <span>Share QR Image</span>
-                </button>
+                {onOpenQrModal ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenQrModal();
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-2xs transition-colors"
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    <span>View Full QR Code</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleShareQrImage}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-2xs transition-colors"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>Share QR Image</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleDownloadQrImage}
@@ -267,9 +292,19 @@ export const ShareModal: React.FC<ShareModalProps> = ({
               </div>
             </div>
           ) : (
-            <p className="text-[11px] text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200 leading-relaxed">
-              This payload exceeds standard QR code density ({formatBytes(rawPayload.length)} &gt; 2 KB). Use Audio (.wav) or the portable container file below.
-            </p>
+            <div className="p-3 bg-slate-100 rounded-xl text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenQrModal?.();
+                }}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:text-blue-800"
+              >
+                <QrCode className="w-4 h-4" />
+                <span>Generate and View QR Code</span>
+              </button>
+            </div>
           )}
         </div>
 

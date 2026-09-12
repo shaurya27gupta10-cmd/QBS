@@ -81,10 +81,20 @@ export interface DecodeState {
   decryptedFile?: DecryptedFileResult;
 }
 
+export interface QrFrame {
+  index: number;
+  total: number;
+  dataUrl: string;
+  payloadString: string;
+}
+
 export interface QrCodeData {
   dataUrl: string;
   isSelfContained: boolean;
   fitsQr: boolean;
+  isMultiPart?: boolean;
+  frameCount?: number;
+  frames?: QrFrame[];
   payloadSize: number;
   warning?: string;
   qrPayloadString?: string;

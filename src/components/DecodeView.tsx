@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { extractPayloadFromWav } from '../lib/audioCodec';
 import { decryptPayload, decryptFilePayload, base64ToBytes, bytesToBase64, inspectPayloadInfo, PayloadInfo } from '../lib/crypto';
-import { parseAndNormalizeQrPayload, scanQrFromImage } from '../lib/qr';
+import { parseAndNormalizeQrPayload, resolveQrPayload, scanQrFromImage } from '../lib/qr';
 import { QrScannerModal } from './QrScannerModal';
 import { AudioVisualizer } from './AudioVisualizer';
 import { DecryptedFileResult } from '../types';
@@ -63,6 +63,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   const audioUrlRef = useRef<string | null>(null);
   const decryptedFileRef = useRef<DecryptedFileResult | null>(null);
   const prevInitialBlobRef = useRef<Blob | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     audioUrlRef.current = audioUrl;
@@ -123,7 +124,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
           setSourceMode('qr');
           setQrText(scanned);
           try {
-            const raw = parseAndNormalizeQrPayload(scanned);
+            const raw = await resolveQrPayload(scanned);
             analyzePayloadBytes(raw);
           } catch {
             // Ignore pre-detect error
@@ -201,14 +202,14 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   }, [initialFile, handleFileProcess]);
 
   // Handle QR text change and pre-detect
-  const handleQrTextChange = (val: string) => {
+  const handleQrTextChange = async (val: string) => {
     setQrText(val);
     setError(null);
     setDecryptedMessage(null);
     setDecryptedFile(null);
-    if (val.trim().length > 10) {
+    if (val.trim().length > 6) {
       try {
-        const raw = parseAndNormalizeQrPayload(val);
+        const raw = await resolveQrPayload(val);
         analyzePayloadBytes(raw);
       } catch {
         setDetectedInfo(null);
@@ -360,9 +361,9 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
         await new Promise((r) => setTimeout(r, 140));
 
         try {
-          payload = parseAndNormalizeQrPayload(qrText);
+          payload = await resolveQrPayload(qrText);
         } catch {
-          throw new Error('This does not appear to be a valid QBS Secure Sound payload. Please ensure you have copied the complete code (e.g. QBSS:... or QBSF:...).');
+          throw new Error('This does not appear to be a valid QBS Secure Sound payload. Please ensure you have scanned the QR code or copied the complete code (e.g. QBSS:... or QBSF:...).');
         }
       }
 
@@ -779,6 +780,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
           </label>
           <div className="relative">
             <input
+              ref={passwordInputRef}
               id="decode-password-input"
               type={showPassword ? 'text' : 'password'}
               value={password}
@@ -1060,9 +1062,18 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
         onClose={() => setIsScannerOpen(false)}
         onScanSuccess={(scannedText) => {
           setIsScannerOpen(false);
+          setSourceMode('qr');
           handleQrTextChange(scannedText);
-          setQrStatusSuccess('QR Code scanned successfully from camera!');
-          setTimeout(() => setQrStatusSuccess(null), 3000);
+          const isFileCode = scannedText.trim().toUpperCase().startsWith('QBSF:');
+          setQrStatusSuccess(
+            isFileCode
+              ? 'QBSF File QR Code scanned automatically!'
+              : 'QBS QR Code scanned automatically!'
+          );
+          setTimeout(() => setQrStatusSuccess(null), 3500);
+          setTimeout(() => {
+            passwordInputRef.current?.focus();
+          }, 150);
         }}
       />
     </div>

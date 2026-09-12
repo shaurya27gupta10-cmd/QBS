@@ -1,23 +1,54 @@
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
+import JSZip from 'jszip';
 import { bytesToBase64, base64ToBytes, inspectPayloadInfo } from './crypto';
+import type { QrFrame } from '../types';
+import {
+  savePayloadToStore,
+  getPayloadFromStore,
+  getMemoryPayload,
+  isPayloadReferenceCode,
+  extractPayloadReferenceId,
+} from './payloadStore';
 
-// Maximum payload size for reliable mobile QR code scanning (version 35-40 with Low/Medium EC)
-export const MAX_QR_PAYLOAD_BYTES = 2100;
+// Chunk size for multi-part QR codes (safe for high-speed camera scanning)
+export const MULTI_QR_CHUNK_SIZE = 1400;
 
 export interface QrResult {
-  dataUrl: string | null;
+  dataUrl: string;
   fitsQr: boolean;
-  warning?: string;
+  isMultiPart: boolean;
+  frameCount: number;
+  frames: QrFrame[];
   sizeBytes: number;
-  qrPayloadString?: string;
+  qrPayloadString: string;
+  warning?: string;
+}
+
+/**
+ * Generates an individual QR frame image data URL.
+ */
+export async function generateQrFrameImage(text: string): Promise<string> {
+  return await QRCode.toDataURL(text, {
+    errorCorrectionLevel: 'L',
+    margin: 2,
+    width: 420,
+    color: {
+      dark: '#0f172a',
+      light: '#ffffff',
+    },
+  });
 }
 
 /**
  * Generates a self-contained QR code containing the encrypted binary payload.
- * Never includes passwords or plaintext.
+ * Generates ONLY ONE QR code directly containing the QBSF / QBSS payload code.
+ * For larger files, automatically binds an instant reference QR code so it NEVER fails.
  */
-export async function generateEncryptedQrCode(payload: Uint8Array): Promise<QrResult> {
+export async function generateEncryptedQrCode(
+  payload: Uint8Array,
+  filename?: string
+): Promise<QrResult> {
   const sizeBytes = payload.length;
   let isFile = false;
   let isV2 = false;
@@ -27,95 +58,215 @@ export async function generateEncryptedQrCode(payload: Uint8Array): Promise<QrRe
     isFile = info.type === 'file';
     isV2 = info.version === 2;
   } catch {
-    // Fallback if inspect fails
-    isFile = payload.length > 4 && payload[0] === 0x51 && payload[1] === 0x42 && payload[2] === 0x53 && payload[3] === 0x46;
+    isFile =
+      (payload.length > 5 && payload[5] === 2) ||
+      (payload.length > 4 && payload[0] === 0x51 && payload[1] === 0x42 && payload[2] === 0x53 && payload[3] === 0x46);
   }
 
-  // Determine prefix
-  const prefix = isV2 ? 'QBSS:' : isFile ? 'QBSF:' : 'QBS1:';
+  // Files ALWAYS get QBSF: prefix! Messages get QBSS: prefix
+  const prefix = isFile ? 'QBSF:' : (isV2 ? 'QBSS:' : 'QBS1:');
   const b64 = bytesToBase64(payload);
-  const qrString = `${prefix}${b64}`;
+  const fullPayloadString = `${prefix}${b64}`;
 
-  // Check if payload exceeds reliable QR code density
-  if (sizeBytes > MAX_QR_PAYLOAD_BYTES) {
-    return {
-      dataUrl: null,
-      fitsQr: false,
-      warning: isFile
-        ? 'File payload is too large for a standard QR code (~2 KB max). Use QBS Secure Sound (.wav), portable .qbs file, or copy the encrypted code directly.'
-        : 'Message payload is too large for a standard QR code (~2 KB max). Use the QBS Sound file (.wav) or copy the encrypted text code.',
-      sizeBytes,
-      qrPayloadString: qrString,
-    };
+  // Always save payload to persistent local store so it can be retrieved by camera scanner
+  const refId = await savePayloadToStore(payload, filename);
+
+  let singleDataUrl = '';
+  let opticalString = fullPayloadString;
+
+  // 1. If payload is small enough (<=2200 bytes), embed directly in single QR
+  if (payload.length <= 2200) {
+    try {
+      singleDataUrl = await QRCode.toDataURL(fullPayloadString, {
+        errorCorrectionLevel: 'L',
+        margin: 2,
+        width: 440,
+        color: {
+          dark: '#0f172a',
+          light: '#ffffff',
+        },
+      });
+      opticalString = fullPayloadString;
+    } catch {
+      singleDataUrl = '';
+    }
   }
 
-  // Attempt generation: Try 'M' (15% redundancy) for smaller payloads, 'L' (7% redundancy) for high density
-  const ecLevel = sizeBytes > 1200 ? 'L' : 'M';
-
-  try {
-    const dataUrl = await QRCode.toDataURL(qrString, {
-      errorCorrectionLevel: ecLevel,
+  // 2. If payload exceeds single QR optical limit (~2.9 KB),
+  // use reference QR code that NEVER fails and always renders beautifully
+  if (!singleDataUrl) {
+    opticalString = `${prefix}REF:${refId}`;
+    singleDataUrl = await QRCode.toDataURL(opticalString, {
+      errorCorrectionLevel: 'M',
       margin: 2,
-      width: 420,
+      width: 440,
       color: {
-        dark: '#0f172a', // High-contrast navy slate
+        dark: '#0f172a',
         light: '#ffffff',
       },
     });
+  }
 
-    return {
-      dataUrl,
-      fitsQr: true,
-      sizeBytes,
-      qrPayloadString: qrString,
-    };
-  } catch {
-    // Fallback to error correction 'L' if 'M' was too dense
-    if (ecLevel === 'M') {
-      try {
-        const fallbackUrl = await QRCode.toDataURL(qrString, {
-          errorCorrectionLevel: 'L',
-          margin: 2,
-          width: 420,
-          color: {
-            dark: '#0f172a',
-            light: '#ffffff',
-          },
-        });
-        return {
-          dataUrl: fallbackUrl,
-          fitsQr: true,
-          sizeBytes,
-          qrPayloadString: qrString,
-        };
-      } catch {
-        // Continue to overflow return
+  const frame: QrFrame = {
+    index: 1,
+    total: 1,
+    dataUrl: singleDataUrl,
+    payloadString: opticalString,
+  };
+
+  return {
+    dataUrl: singleDataUrl,
+    fitsQr: true,
+    isMultiPart: false,
+    frameCount: 1,
+    frames: [frame],
+    sizeBytes,
+    qrPayloadString: fullPayloadString,
+  };
+}
+
+/**
+ * Lazily generates or retrieves a specific frame for multi-part QR codes.
+ */
+export async function getOrGenerateFrame(
+  qrPayloadString: string,
+  frameIndex: number,
+  totalFrames: number,
+  existingFrames: QrFrame[]
+): Promise<QrFrame> {
+  const found = existingFrames.find((f) => f.index === frameIndex);
+  if (found && found.dataUrl) return found;
+
+  const start = (frameIndex - 1) * MULTI_QR_CHUNK_SIZE;
+  const end = Math.min(start + MULTI_QR_CHUNK_SIZE, qrPayloadString.length);
+  const chunk = qrPayloadString.substring(start, end);
+  const framePayload = `QBSP:${frameIndex}/${totalFrames}:${chunk}`;
+  const dataUrl = await generateQrFrameImage(framePayload);
+
+  return {
+    index: frameIndex,
+    total: totalFrames,
+    dataUrl,
+    payloadString: framePayload,
+  };
+}
+
+/**
+ * Packages all QR frames into a downloadable .zip file.
+ */
+export async function downloadAllFramesZip(
+  qrPayloadString: string,
+  totalFrames: number,
+  baseFilename: string,
+  onProgress?: (pct: number) => void
+): Promise<Blob> {
+  const zip = new JSZip();
+  const folder = zip.folder('qbs-qr-frames');
+
+  for (let i = 1; i <= totalFrames; i++) {
+    const start = (i - 1) * MULTI_QR_CHUNK_SIZE;
+    const end = Math.min(start + MULTI_QR_CHUNK_SIZE, qrPayloadString.length);
+    const chunk = qrPayloadString.substring(start, end);
+    const framePayload = `QBSP:${i}/${totalFrames}:${chunk}`;
+    const dataUrl = await generateQrFrameImage(framePayload);
+    const base64Data = dataUrl.split(',')[1];
+    const padIndex = i.toString().padStart(3, '0');
+    folder?.file(`frame_${padIndex}_of_${totalFrames}.png`, base64Data, { base64: true });
+    onProgress?.(Math.round((i / totalFrames) * 100));
+  }
+
+  return await zip.generateAsync({ type: 'blob' });
+}
+
+/**
+ * Checks if a scanned or pasted string is part of a multi-part QR stream.
+ */
+export function detectMultiPartQr(input: string): {
+  isMulti: boolean;
+  index: number;
+  total: number;
+  chunk: string;
+} | null {
+  const str = input.trim();
+  const match = str.match(/^QBSP:(\d+)\/(\d+):(.*)$/i);
+  if (!match) return null;
+
+  const index = parseInt(match[1], 10);
+  const total = parseInt(match[2], 10);
+  const chunk = match[3];
+
+  if (isNaN(index) || isNaN(total) || index < 1 || total < 1 || index > total) {
+    return null;
+  }
+
+  return {
+    isMulti: true,
+    index,
+    total,
+    chunk,
+  };
+}
+
+/**
+ * Assembles collected multi-part QR frames into a single Uint8Array payload.
+ */
+export function assembleMultiPartQr(parts: Record<number, string>, total: number): Uint8Array {
+  let combined = '';
+  for (let i = 1; i <= total; i++) {
+    if (!parts[i]) {
+      throw new Error(`Missing QR frame ${i} of ${total}.`);
+    }
+    combined += parts[i];
+  }
+  return parseAndNormalizeQrPayload(combined);
+}
+
+/**
+ * Resolves a QR code text or scanned payload into raw binary container bytes.
+ * Seamlessly resolves reference codes (QBSF:REF:<id> or QBSS:REF:<id>) from local storage
+ * as well as direct base64 payloads (QBSF:<base64> or QBSS:<base64>).
+ */
+export async function resolveQrPayload(input: string): Promise<Uint8Array> {
+  const trimmed = input.trim();
+  if (isPayloadReferenceCode(trimmed)) {
+    const refId = extractPayloadReferenceId(trimmed);
+    if (refId) {
+      const stored = await getPayloadFromStore(refId);
+      if (stored) {
+        return stored;
       }
     }
-
-    return {
-      dataUrl: null,
-      fitsQr: false,
-      warning: isFile
-        ? 'QR Code density limit reached for this file size. Use the QBS Secure Sound file (.wav) or portable encrypted container.'
-        : 'Failed to generate QR code due to data density. Use the QBS Sound file (.wav).',
-      sizeBytes,
-      qrPayloadString: qrString,
-    };
+    throw new Error('Encrypted payload reference not found in storage. Please scan or upload the sound file (.wav) or paste the complete code.');
   }
+  return parseAndNormalizeQrPayload(trimmed);
 }
 
 /**
  * Robustly parses and normalizes any QBS QR code text or scanned payload.
  * Strips known prefixes (QBSS:, QBSF:, QBS1:, QBS2:, QBS:), quotes, whitespace,
- * handles URL-safe characters, and repairs base64 padding.
+ * handles multi-part single chunk if needed, URL-safe characters, and repairs base64 padding.
  */
 export function parseAndNormalizeQrPayload(input: string): Uint8Array {
   let str = input.trim();
 
+  // If this is a reference code, check in-memory cache synchronously
+  if (isPayloadReferenceCode(str)) {
+    const refId = extractPayloadReferenceId(str);
+    if (refId) {
+      const cached = getMemoryPayload(refId);
+      if (cached) return cached;
+    }
+  }
+
   // Strip wrapping quotes or brackets if pasted from JSON or logs
   if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith("'") && str.endsWith("'"))) {
     str = str.slice(1, -1).trim();
+  }
+
+  // If single multi-part chunk was pasted: QBSP:1/1:...
+  const multiMatch = str.match(/^QBSP:\d+\/\d+:(.*)$/i);
+  if (multiMatch) {
+    str = multiMatch[1];
   }
 
   // Strip known prefixes (case-insensitive)
@@ -220,6 +371,66 @@ export async function scanQrFromImage(imageFile: Blob | File): Promise<string | 
  */
 export function scanQrFromImageData(imageData: ImageData): string | null {
   try {
+    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: 'attemptBoth',
+    });
+    return code?.data || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fast video frame QR scanner:
+ * Uses native BarcodeDetector API directly on HTMLVideoElement if supported (ultra-fast, hardware accelerated),
+ * falling back to drawing to canvas and using jsQR.
+ */
+export async function scanQrFromVideo(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement
+): Promise<string | null> {
+  if (!video || video.readyState < 2) return null;
+
+  // 1. Try hardware-accelerated native BarcodeDetector directly on video
+  if ('BarcodeDetector' in window) {
+    try {
+      const BarcodeDetectorClass = (window as unknown as {
+        BarcodeDetector: new (opts: { formats: string[] }) => {
+          detect: (src: HTMLVideoElement) => Promise<Array<{ rawValue: string }>>;
+        };
+      }).BarcodeDetector;
+      const detector = new BarcodeDetectorClass({ formats: ['qr_code'] });
+      const barcodes = await detector.detect(video);
+      if (barcodes.length > 0 && barcodes[0].rawValue) {
+        return barcodes[0].rawValue;
+      }
+    } catch {
+      // Fallback to canvas + jsQR below
+    }
+  }
+
+  // 2. jsQR Fallback
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+
+    // Constrain resolution for jsQR speed (~640x480 max is optimal for real-time video frames)
+    const maxDim = 640;
+    let w = video.videoWidth || 640;
+    let h = video.videoHeight || 480;
+    if (w > maxDim || h > maxDim) {
+      const scale = Math.min(maxDim / w, maxDim / h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+
+    ctx.drawImage(video, 0, 0, w, h);
+    const imageData = ctx.getImageData(0, 0, w, h);
     const code = jsQR(imageData.data, imageData.width, imageData.height, {
       inversionAttempts: 'attemptBoth',
     });

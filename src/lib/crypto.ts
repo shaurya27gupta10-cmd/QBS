@@ -397,6 +397,31 @@ export async function encryptFile(
   return container;
 }
 
+function getPasswordCandidates(rawPassword: string): string[] {
+  const candidates: string[] = [];
+  const add = (pwd: string) => {
+    if (pwd && !candidates.includes(pwd)) {
+      candidates.push(pwd);
+    }
+  };
+
+  // 1. Raw password as entered
+  add(rawPassword);
+
+  // 2. Trimmed whitespace (removes leading/trailing spaces & newlines from touch screen copy-paste)
+  add(rawPassword.trim());
+
+  // 3. Stripped invisible zero-width chars and non-breaking spaces
+  const cleanInvisible = rawPassword.replace(/[\u200B-\u200D\uFEFF\u00A0\r\n\t]/g, '').trim();
+  add(cleanInvisible);
+
+  // 4. Unicode normalized forms
+  add(rawPassword.normalize('NFKC').trim());
+  add(rawPassword.normalize('NFC').trim());
+
+  return candidates;
+}
+
 /**
  * Decrypts a QBS-Secure payload (supporting both v2 QBSS and v1 legacy formats).
  */
@@ -411,7 +436,7 @@ export async function decryptPayload(
 
   // Minimum sanity check
   if (!payload || payload.length < 50) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Payload is too small to be a valid QBS container.');
   }
 
   // Check Magic header
@@ -428,7 +453,7 @@ export async function decryptPayload(
     payload[3] === MAGIC_HEADER_MESSAGE[3];
 
   if (!isV2 && !isV1Message) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Unrecognized container header: Not a valid QBS Secure Sound file.');
   }
 
   // -------------------------------------------------------------
@@ -446,7 +471,7 @@ export async function decryptPayload(
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const version = payload[4];
   if (version !== PROTOCOL_VERSION_2) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error(`Unsupported QBS container version: ${version}`);
   }
 
   const payloadType = payload[5]; // 1 = Message, 2 = File
@@ -458,17 +483,17 @@ export async function decryptPayload(
   const parallelism = payload[16];
 
   let offset = 17;
-  const salt = payload.subarray(offset, offset + SALT_LENGTH);
+  const salt = payload.slice(offset, offset + SALT_LENGTH);
   offset += SALT_LENGTH;
 
-  const iv = payload.subarray(offset, offset + IV_LENGTH);
+  const iv = payload.slice(offset, offset + IV_LENGTH);
   offset += IV_LENGTH;
 
   const metadataLen = view.getUint16(offset, false);
   offset += 2;
 
   if (offset + metadataLen + 4 > payload.length) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Corrupted container header: Metadata length exceeds payload boundary.');
   }
 
   offset += metadataLen;
@@ -477,84 +502,64 @@ export async function decryptPayload(
   offset += 4;
 
   const headerLen = offset;
-  const headerAad = payload.subarray(0, headerLen);
+  const headerAad = payload.slice(0, headerLen);
 
   if (headerLen + ciphertextLen + 4 !== payload.length) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    if (payload.length < headerLen + ciphertextLen + 4) {
+      throw new Error(
+        `Incomplete payload: Received ${payload.length.toLocaleString()} bytes of ${(headerLen + ciphertextLen + 4).toLocaleString()} bytes expected. The code was truncated by clipboard or scanner. Please copy the complete code or use the sound file (.wav).`
+      );
+    }
+    throw new Error('Corrupted container header: Encrypted payload length does not match container size.');
   }
 
-  const ciphertext = payload.subarray(headerLen, headerLen + ciphertextLen);
+  const ciphertext = payload.slice(headerLen, headerLen + ciphertextLen);
 
   // Validate outer CRC32
   const storedCrc = view.getUint32(headerLen + ciphertextLen, false);
   const calculatedCrc = calculateCRC32(payload.subarray(0, headerLen + ciphertextLen));
   if (storedCrc !== calculatedCrc) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Integrity verification failed: Outer CRC32 checksum mismatch. The payload was corrupted in transit.');
   }
 
   onProgress?.('Deriving cryptographic key with Argon2id...', 45);
 
-  let key: CryptoKey;
-  let rawKey: Uint8Array | null = null;
+  const candidates = getPasswordCandidates(password);
+  let decryptedBuffer: ArrayBuffer | null = null;
 
-  try {
-    if (kdfId === KDF_ID_ARGON2ID) {
-      const derived = await deriveKeyArgon2id(password, salt, timeCost, memoryCostKb, parallelism);
-      key = derived.key;
-      rawKey = derived.rawKey;
-    } else {
-      key = await deriveKeyPBKDF2(password, salt, timeCost || PBKDF2_ITERATIONS);
-    }
-  } catch {
-    throw new Error(GENERIC_AUTH_ERROR);
-  }
-
-  onProgress?.('Verifying AES-256-GCM authentication tag & AAD binding...', 75);
-
-  let decryptedBuffer: ArrayBuffer;
-  try {
-    decryptedBuffer = await crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv as BufferSource,
-        additionalData: headerAad as BufferSource,
-      },
-      key,
-      ciphertext as BufferSource
-    );
-  } catch {
-    // If decryption fails and user has trailing/leading whitespace, try trimmed password
-    if (password.trim() !== password && password.trim().length > 0) {
-      try {
-        let trimmedKey: CryptoKey;
-        if (kdfId === KDF_ID_ARGON2ID) {
-          const derived = await deriveKeyArgon2id(password.trim(), salt, timeCost, memoryCostKb, parallelism);
-          trimmedKey = derived.key;
-          if (rawKey) zeroMemory(rawKey);
-          rawKey = derived.rawKey;
-        } else {
-          trimmedKey = await deriveKeyPBKDF2(password.trim(), salt, timeCost || PBKDF2_ITERATIONS);
-        }
-        decryptedBuffer = await crypto.subtle.decrypt(
-          {
-            name: 'AES-GCM',
-            iv: iv as BufferSource,
-            additionalData: headerAad as BufferSource,
-          },
-          trimmedKey,
-          ciphertext as BufferSource
-        );
-      } catch {
-        if (rawKey) zeroMemory(rawKey);
-        throw new Error(GENERIC_AUTH_ERROR);
+  for (const candidate of candidates) {
+    let key: CryptoKey;
+    let rawKey: Uint8Array | null = null;
+    try {
+      if (kdfId === KDF_ID_ARGON2ID) {
+        const derived = await deriveKeyArgon2id(candidate, salt, timeCost, memoryCostKb, parallelism);
+        key = derived.key;
+        rawKey = derived.rawKey;
+      } else {
+        key = await deriveKeyPBKDF2(candidate, salt, timeCost || PBKDF2_ITERATIONS);
       }
-    } else {
+
+      decryptedBuffer = await crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: iv as BufferSource,
+          additionalData: headerAad as BufferSource,
+        },
+        key,
+        ciphertext as BufferSource
+      );
+
       if (rawKey) zeroMemory(rawKey);
-      throw new Error(GENERIC_AUTH_ERROR);
+      if (decryptedBuffer) break;
+    } catch {
+      if (rawKey) zeroMemory(rawKey);
+      // Try next candidate
     }
   }
 
-  if (rawKey) zeroMemory(rawKey);
+  if (!decryptedBuffer) {
+    throw new Error('Decryption failed: Incorrect password or invalid security tag. Please check your password and try again.');
+  }
 
   onProgress?.('Reconstructing authentic message...', 95);
 
@@ -570,7 +575,7 @@ export async function decryptPayload(
     zeroMemory(plainBytes);
     return text;
   } catch {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Message decoding failed: Decrypted data could not be parsed as valid text.');
   }
 }
 
@@ -587,7 +592,7 @@ export async function decryptFilePayload(
   }
 
   if (!payload || payload.length < 50) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Payload is too small to be a valid QBS container.');
   }
 
   const isV2 =
@@ -603,7 +608,7 @@ export async function decryptFilePayload(
     payload[3] === MAGIC_HEADER_FILE[3];
 
   if (!isV2 && !isV1File) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Unrecognized container header: Not a valid QBS Secure Sound file.');
   }
 
   // -------------------------------------------------------------
@@ -621,7 +626,7 @@ export async function decryptFilePayload(
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const version = payload[4];
   if (version !== PROTOCOL_VERSION_2) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error(`Unsupported QBS container version: ${version}`);
   }
 
   const payloadType = payload[5]; // 2 = File
@@ -633,20 +638,20 @@ export async function decryptFilePayload(
   const parallelism = payload[16];
 
   let offset = 17;
-  const salt = payload.subarray(offset, offset + SALT_LENGTH);
+  const salt = payload.slice(offset, offset + SALT_LENGTH);
   offset += SALT_LENGTH;
 
-  const iv = payload.subarray(offset, offset + IV_LENGTH);
+  const iv = payload.slice(offset, offset + IV_LENGTH);
   offset += IV_LENGTH;
 
   const metadataLen = view.getUint16(offset, false);
   offset += 2;
 
   if (offset + metadataLen + 4 > payload.length) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Corrupted container header: Metadata length exceeds payload boundary.');
   }
 
-  const metadataBytes = payload.subarray(offset, offset + metadataLen);
+  const metadataBytes = payload.slice(offset, offset + metadataLen);
   offset += metadataLen;
 
   let metadataObj: { name?: string; mime?: string; origSize?: number } = {};
@@ -661,57 +666,64 @@ export async function decryptFilePayload(
   offset += 4;
 
   const headerLen = offset;
-  const headerAad = payload.subarray(0, headerLen);
+  const headerAad = payload.slice(0, headerLen);
 
   if (headerLen + ciphertextLen + 4 !== payload.length) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    if (payload.length < headerLen + ciphertextLen + 4) {
+      throw new Error(
+        `Incomplete payload: Received ${payload.length.toLocaleString()} bytes of ${(headerLen + ciphertextLen + 4).toLocaleString()} bytes expected. The code was truncated by clipboard or scanner. Please copy the complete code, scan all QR parts, or use the sound file (.wav).`
+      );
+    }
+    throw new Error('Corrupted container header: Length header does not match container size.');
   }
 
-  const ciphertext = payload.subarray(headerLen, headerLen + ciphertextLen);
+  const ciphertext = payload.slice(headerLen, headerLen + ciphertextLen);
 
   // Validate outer CRC32
   const storedCrc = view.getUint32(headerLen + ciphertextLen, false);
   const calculatedCrc = calculateCRC32(payload.subarray(0, headerLen + ciphertextLen));
   if (storedCrc !== calculatedCrc) {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('Integrity verification failed: Outer CRC32 checksum mismatch. The payload was corrupted in transit.');
   }
 
   onProgress?.('Deriving cryptographic key with Argon2id...', 45);
 
-  let key: CryptoKey;
-  let rawKey: Uint8Array | null = null;
+  const candidates = getPasswordCandidates(password);
+  let decryptedBuffer: ArrayBuffer | null = null;
 
-  try {
-    if (kdfId === KDF_ID_ARGON2ID) {
-      const derived = await deriveKeyArgon2id(password, salt, timeCost, memoryCostKb, parallelism);
-      key = derived.key;
-      rawKey = derived.rawKey;
-    } else {
-      key = await deriveKeyPBKDF2(password, salt, timeCost || PBKDF2_ITERATIONS);
+  for (const candidate of candidates) {
+    let key: CryptoKey;
+    let rawKey: Uint8Array | null = null;
+    try {
+      if (kdfId === KDF_ID_ARGON2ID) {
+        const derived = await deriveKeyArgon2id(candidate, salt, timeCost, memoryCostKb, parallelism);
+        key = derived.key;
+        rawKey = derived.rawKey;
+      } else {
+        key = await deriveKeyPBKDF2(candidate, salt, timeCost || PBKDF2_ITERATIONS);
+      }
+
+      decryptedBuffer = await crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: iv as BufferSource,
+          additionalData: headerAad as BufferSource,
+        },
+        key,
+        ciphertext as BufferSource
+      );
+
+      if (rawKey) zeroMemory(rawKey);
+      if (decryptedBuffer) break;
+    } catch {
+      if (rawKey) zeroMemory(rawKey);
+      // Try next candidate
     }
-  } catch {
-    throw new Error(GENERIC_AUTH_ERROR);
   }
 
-  onProgress?.('Verifying AES-256-GCM authentication tag & AAD binding...', 75);
-
-  let decryptedBuffer: ArrayBuffer;
-  try {
-    decryptedBuffer = await crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv as BufferSource,
-        additionalData: headerAad as BufferSource,
-      },
-      key,
-      ciphertext as BufferSource
-    );
-  } catch {
-    if (rawKey) zeroMemory(rawKey);
-    throw new Error(GENERIC_AUTH_ERROR);
+  if (!decryptedBuffer) {
+    throw new Error('Decryption failed: Incorrect password or invalid security tag. Please check your password and try again.');
   }
-
-  if (rawKey) zeroMemory(rawKey);
 
   onProgress?.('Reconstructing authentic file data...', 95);
 
@@ -741,7 +753,7 @@ export async function decryptFilePayload(
       objectUrl,
     };
   } catch {
-    throw new Error(GENERIC_AUTH_ERROR);
+    throw new Error('File reconstruction failed: Decrypted bytes could not be unpacked.');
   }
 }
 
