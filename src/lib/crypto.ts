@@ -1,25 +1,78 @@
 /**
- * QBS Secure Sound - Cryptography Module
- * Client-side authenticated encryption using Web Crypto API:
- * - PBKDF2 (100,000 iterations, SHA-256) for password-to-key derivation
- * - AES-GCM (256-bit key, 12-byte random IV)
- * - Cryptographically secure random 16-byte salt
- * - Binary serialization with magic bytes and CRC32 integrity check
+ * QBS-Secure Cryptography Engine (v2.0)
+ * 
+ * CORE SECURITY SPECIFICATION:
+ * - Primitives: Standards-based, audited primitives (Argon2id RFC 9106 + AES-256-GCM NIST SP 800-38D).
+ * - Key Derivation: Argon2id with 64 MB memory hardness, 3 time cost iterations, 1 parallelism, 16-byte random salt.
+ * - Authenticated Encryption: AES-256-GCM with 96-bit unique random nonce, 128-bit authentication tag.
+ * - Additional Authenticated Data (AAD): The entire security-sensitive header (magic, version, kdf params,
+ *   salt, nonce, metadata, length) is bound to the AES-GCM tag. Any header or metadata tampering
+ *   causes mathematical authentication failure before any plaintext can be exposed.
+ * - Pre-Encryption Compression: Deflate compression reduces repetitive entropy and shrinks carrier audio.
+ * - Memory Safety: Plaintext typed buffers and derived key materials are zeroed with .fill(0) after use.
+ * - Error Handling: Non-revealing generic authentication failure to prevent timing and oracle attacks.
+ * - Zero Knowledge: No password, key, or plaintext ever stored or sent over the network.
  */
 
-import { DecryptedFileResult, QbsPayloadType } from '../types';
+import { argon2id } from 'hash-wasm';
+import { compressData, decompressData } from './compression';
+import { DecryptedFileResult, QbsPayloadType, KdfType } from '../types';
 
-// Magic identifier: 'QBS1' for messages, 'QBSF' for files
-export const MAGIC_HEADER_MESSAGE = new Uint8Array([0x51, 0x42, 0x53, 0x31]); // 'QBS1'
-export const MAGIC_HEADER_FILE = new Uint8Array([0x51, 0x42, 0x53, 0x46]); // 'QBSF'
-export const MAGIC_HEADER = MAGIC_HEADER_MESSAGE; // Backward compatibility
-export const PROTOCOL_VERSION = 1;
-export const ALGORITHM_ID = 1; // 1 = AES-256-GCM with PBKDF2-SHA256
+// Protocol Identifiers
+export const MAGIC_HEADER_SECURE = new Uint8Array([0x51, 0x42, 0x53, 0x53]); // 'QBSS' (v2 Standard)
+export const MAGIC_HEADER_MESSAGE = new Uint8Array([0x51, 0x42, 0x53, 0x31]); // 'QBS1' (v1 Legacy Message)
+export const MAGIC_HEADER_FILE = new Uint8Array([0x51, 0x42, 0x53, 0x46]); // 'QBSF' (v1 Legacy File)
+export const MAGIC_HEADER = MAGIC_HEADER_SECURE;
+
+export const PROTOCOL_VERSION_2 = 2;
+export const PROTOCOL_VERSION_1 = 1;
+export const PROTOCOL_VERSION = PROTOCOL_VERSION_2;
+
+// KDF Identifiers
+export const KDF_ID_PBKDF2 = 1;
+export const KDF_ID_ARGON2ID = 2;
+
+// Standard Security Parameters
+export const ARGON2_TIME_COST = 3; // 3 iterations
+export const ARGON2_MEMORY_COST_KB = 65536; // 64 MB memory hardness
+export const ARGON2_PARALLELISM = 1;
 export const PBKDF2_ITERATIONS = 100000;
 export const SALT_LENGTH = 16;
-export const IV_LENGTH = 12;
+export const IV_LENGTH = 12; // 96 bits for AES-GCM
 
-// Standard CRC32 table
+// Standard non-revealing error message (OWASP recommendation)
+export const GENERIC_AUTH_ERROR = 'Unable to authenticate QBS-Secure file.';
+
+/**
+ * Zeroes sensitive memory buffers to prevent memory scrapers and heap dumps.
+ */
+export function zeroMemory(buffer: Uint8Array | ArrayBuffer | Int16Array | Uint32Array): void {
+  try {
+    if (buffer instanceof Uint8Array || buffer instanceof Int16Array || buffer instanceof Uint32Array) {
+      buffer.fill(0);
+    } else if (buffer instanceof ArrayBuffer) {
+      new Uint8Array(buffer).fill(0);
+    }
+  } catch {
+    // Ignore if buffer is detached or read-only
+  }
+}
+
+/**
+ * Constant-time byte array equality comparison to prevent side-channel timing attacks.
+ */
+export function constantTimeCompare(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a[i] ^ b[i];
+  }
+  return result === 0;
+}
+
+// CRC32 Lookup Table
 const crcTable: Uint32Array = (() => {
   const table = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
@@ -41,9 +94,46 @@ export function calculateCRC32(bytes: Uint8Array): number {
 }
 
 /**
- * Derives an AES-GCM 256-bit CryptoKey from a password and salt using PBKDF2-SHA256
+ * Derives a 256-bit AES key from a password using memory-hard Argon2id (RFC 9106).
  */
-export async function deriveKeyFromPassword(password: string, salt: Uint8Array): Promise<CryptoKey> {
+export async function deriveKeyArgon2id(
+  password: string,
+  salt: Uint8Array,
+  timeCost: number = ARGON2_TIME_COST,
+  memoryCostKb: number = ARGON2_MEMORY_COST_KB,
+  parallelism: number = ARGON2_PARALLELISM
+): Promise<{ key: CryptoKey; rawKey: Uint8Array }> {
+  // Execute WebAssembly-accelerated Argon2id
+  const rawKey = await argon2id({
+    password,
+    salt,
+    parallelism,
+    iterations: timeCost,
+    memorySize: memoryCostKb,
+    hashLength: 32, // 256-bit key
+    outputType: 'binary',
+  });
+
+  // Import into Web Crypto API for hardware-accelerated AES-256-GCM
+  const key = await crypto.subtle.importKey(
+    'raw',
+    rawKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  return { key, rawKey };
+}
+
+/**
+ * Derives a 256-bit AES key using PBKDF2-HMAC-SHA256 (for backward compatibility).
+ */
+export async function deriveKeyPBKDF2(
+  password: string,
+  salt: Uint8Array,
+  iterations: number = PBKDF2_ITERATIONS
+): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const passwordBuffer = encoder.encode(password);
 
@@ -55,11 +145,13 @@ export async function deriveKeyFromPassword(password: string, salt: Uint8Array):
     ['deriveKey']
   );
 
+  zeroMemory(passwordBuffer);
+
   return await crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
       salt: salt as BufferSource,
-      iterations: PBKDF2_ITERATIONS,
+      iterations,
       hash: 'SHA-256',
     },
     importedKey,
@@ -70,9 +162,13 @@ export async function deriveKeyFromPassword(password: string, salt: Uint8Array):
 }
 
 /**
- * Encrypts plaintext message into a compact binary payload
+ * Encrypts a text message into the QBS-Secure v2 authenticated container.
  */
-export async function encryptMessage(message: string, password: string): Promise<Uint8Array> {
+export async function encryptMessage(
+  message: string,
+  password: string,
+  onProgress?: (step: string, percent: number) => void
+): Promise<Uint8Array> {
   if (!message || message.trim().length === 0) {
     throw new Error('Please enter a message first.');
   }
@@ -80,314 +176,117 @@ export async function encryptMessage(message: string, password: string): Promise
     throw new Error('Please enter a password.');
   }
 
-  // 1. Generate random salt & IV
+  onProgress?.('Preparing payload & pre-encryption compression...', 15);
+  const encoder = new TextEncoder();
+  const rawPlaintext = encoder.encode(message);
+
+  // 1. Pre-encryption compression
+  const { compressed, wasCompressed } = await compressData(rawPlaintext);
+
+  onProgress?.('Generating cryptographic salt & 96-bit nonce...', 30);
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
   const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
 
-  // 2. Derive 256-bit key from password
-  const key = await deriveKeyFromPassword(password, salt);
+  onProgress?.('Deriving 256-bit key with Argon2id (64MB memory hardness)...', 50);
+  const { key, rawKey } = await deriveKeyArgon2id(
+    password,
+    salt,
+    ARGON2_TIME_COST,
+    ARGON2_MEMORY_COST_KB,
+    ARGON2_PARALLELISM
+  );
 
-  // 3. Encrypt with AES-GCM (128-bit tag attached automatically to end of ciphertext)
-  const encoder = new TextEncoder();
-  const plaintextBytes = encoder.encode(message);
+  // Empty metadata for text messages
+  const metadataBytes = new Uint8Array(0);
 
+  // 2. Assemble Header for Authenticated Additional Data (AAD)
+  // Header structure:
+  // [4] Magic "QBSS"
+  // [1] Version = 2
+  // [1] Payload Type: 1 = Message, 2 = File
+  // [1] KDF ID = 2 (Argon2id)
+  // [1] Compression Flag: 1 = Yes, 0 = No
+  // [4] KDF Iterations (Uint32 BE)
+  // [4] KDF Memory Cost KB (Uint32 BE)
+  // [1] KDF Parallelism (Uint8)
+  // [16] Salt
+  // [12] Nonce/IV
+  // [2] Metadata Length (Uint16 BE)
+  // [M] Metadata bytes
+  // [4] Ciphertext Length (Uint32 BE)
+  const headerLen = 4 + 1 + 1 + 1 + 1 + 4 + 4 + 1 + SALT_LENGTH + IV_LENGTH + 2 + metadataBytes.length + 4;
+  const headerAad = new Uint8Array(headerLen);
+  const view = new DataView(headerAad.buffer);
+
+  let offset = 0;
+  headerAad.set(MAGIC_HEADER_SECURE, offset);
+  offset += 4;
+
+  headerAad[offset++] = PROTOCOL_VERSION_2;
+  headerAad[offset++] = 1; // 1 = Message
+  headerAad[offset++] = KDF_ID_ARGON2ID;
+  headerAad[offset++] = wasCompressed ? 1 : 0;
+
+  view.setUint32(offset, ARGON2_TIME_COST, false);
+  offset += 4;
+  view.setUint32(offset, ARGON2_MEMORY_COST_KB, false);
+  offset += 4;
+  headerAad[offset++] = ARGON2_PARALLELISM;
+
+  headerAad.set(salt, offset);
+  offset += SALT_LENGTH;
+
+  headerAad.set(iv, offset);
+  offset += IV_LENGTH;
+
+  view.setUint16(offset, metadataBytes.length, false);
+  offset += 2;
+  if (metadataBytes.length > 0) {
+    headerAad.set(metadataBytes, offset);
+    offset += metadataBytes.length;
+  }
+
+  // Calculate expected ciphertext length: plaintext.length + 16 (GCM auth tag)
+  const expectedCiphertextLen = compressed.length + 16;
+  view.setUint32(offset, expectedCiphertextLen, false);
+
+  onProgress?.('Encrypting payload with AES-256-GCM and AAD binding...', 80);
+
+  // 3. Encrypt with AES-GCM using AAD
   const ciphertextBuffer = await crypto.subtle.encrypt(
     {
       name: 'AES-GCM',
       iv: iv as BufferSource,
+      additionalData: headerAad as BufferSource,
     },
     key,
-    plaintextBytes
+    compressed as BufferSource
   );
 
-  const ciphertextBytes = new Uint8Array(ciphertextBuffer);
+  const ciphertext = new Uint8Array(ciphertextBuffer);
 
-  // 4. Pack into compact binary payload:
-  // [4 bytes Magic "QBS1"]
-  // [1 byte Version]
-  // [1 byte Alg ID]
-  // [16 bytes Salt]
-  // [12 bytes IV]
-  // [4 bytes Ciphertext Length (Uint32 Big-Endian)]
-  // [N bytes Ciphertext]
-  // [4 bytes CRC32 Checksum (Uint32 Big-Endian)]
-  const totalLength = 4 + 1 + 1 + SALT_LENGTH + IV_LENGTH + 4 + ciphertextBytes.length + 4;
-  const payload = new Uint8Array(totalLength);
-  const view = new DataView(payload.buffer);
+  // 4. Assemble complete container: Header AAD + Ciphertext + CRC32
+  const totalLength = headerLen + ciphertext.length + 4;
+  const container = new Uint8Array(totalLength);
+  const containerView = new DataView(container.buffer);
 
-  let offset = 0;
-  payload.set(MAGIC_HEADER, offset);
-  offset += 4;
+  container.set(headerAad, 0);
+  container.set(ciphertext, headerLen);
 
-  payload[offset++] = PROTOCOL_VERSION;
-  payload[offset++] = ALGORITHM_ID;
+  // Outer CRC32 over the entire container up to checksum position
+  const crc = calculateCRC32(container.subarray(0, headerLen + ciphertext.length));
+  containerView.setUint32(headerLen + ciphertext.length, crc, false);
 
-  payload.set(salt, offset);
-  offset += SALT_LENGTH;
+  // 5. Secure Memory Cleanup
+  zeroMemory(rawKey);
+  zeroMemory(rawPlaintext);
 
-  payload.set(iv, offset);
-  offset += IV_LENGTH;
-
-  view.setUint32(offset, ciphertextBytes.length, false); // Big-Endian
-  offset += 4;
-
-  payload.set(ciphertextBytes, offset);
-  offset += ciphertextBytes.length;
-
-  // Compute CRC32 over the payload up to this point
-  const dataForCrc = payload.subarray(0, offset);
-  const crc = calculateCRC32(dataForCrc);
-  view.setUint32(offset, crc, false); // Big-Endian
-
-  return payload;
+  onProgress?.('QBS-Secure container finalized', 100);
+  return container;
 }
 
 /**
- * Decrypts a binary payload given a password
- */
-export async function decryptPayload(payload: Uint8Array, password: string): Promise<string> {
-  if (!password || password.length === 0) {
-    throw new Error('Please enter a password.');
-  }
-
-  // Minimum size check: 4 + 1 + 1 + 16 + 12 + 4 + 16 (min GCM tag) + 4 = 58 bytes
-  if (payload.length < 58) {
-    throw new Error('The audio does not contain a valid QBS secure payload.');
-  }
-
-  // Check Magic header
-  if (
-    payload[0] !== MAGIC_HEADER[0] ||
-    payload[1] !== MAGIC_HEADER[1] ||
-    payload[2] !== MAGIC_HEADER[2] ||
-    payload[3] !== MAGIC_HEADER[3]
-  ) {
-    throw new Error('The audio does not contain a valid QBS secure payload.');
-  }
-
-  const version = payload[4];
-  if (version !== PROTOCOL_VERSION) {
-    throw new Error(`Unsupported QBS version (v${version}). Please use a compatible version.`);
-  }
-
-  const algId = payload[5];
-  if (algId !== ALGORITHM_ID) {
-    throw new Error('Unsupported algorithm identifier.');
-  }
-
-  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-
-  let offset = 6;
-  const salt = payload.slice(offset, offset + SALT_LENGTH);
-  offset += SALT_LENGTH;
-
-  const iv = payload.slice(offset, offset + IV_LENGTH);
-  offset += IV_LENGTH;
-
-  const ciphertextLen = view.getUint32(offset, false);
-  offset += 4;
-
-  if (offset + ciphertextLen + 4 !== payload.length) {
-    throw new Error('The audio does not contain a valid QBS secure payload.');
-  }
-
-  const ciphertext = payload.slice(offset, offset + ciphertextLen);
-  offset += ciphertextLen;
-
-  const storedCrc = view.getUint32(offset, false);
-  const dataForCrc = payload.subarray(0, offset);
-  const calculatedCrc = calculateCRC32(dataForCrc);
-
-  if (storedCrc !== calculatedCrc) {
-    throw new Error('Integrity check failed. The encrypted data has been altered.');
-  }
-
-  // Derive key and decrypt with primary password or trimmed fallback
-  let decryptedBuffer: ArrayBuffer | null = null;
-
-  try {
-    const key = await deriveKeyFromPassword(password, salt);
-    decryptedBuffer = await crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv as BufferSource,
-      },
-      key,
-      ciphertext as BufferSource
-    );
-  } catch {
-    // If decryption fails and password has leading/trailing whitespace, try trimmed password
-    if (password.trim() !== password && password.trim().length > 0) {
-      try {
-        const trimmedKey = await deriveKeyFromPassword(password.trim(), salt);
-        decryptedBuffer = await crypto.subtle.decrypt(
-          {
-            name: 'AES-GCM',
-            iv: iv as BufferSource,
-          },
-          trimmedKey,
-          ciphertext as BufferSource
-        );
-      } catch {
-        throw new Error('Unable to decrypt. Check the password or audio file.');
-      }
-    } else {
-      throw new Error('Unable to decrypt. Check the password or audio file.');
-    }
-  }
-
-  try {
-    const decoder = new TextDecoder('utf-8', { fatal: true });
-    return decoder.decode(decryptedBuffer);
-  } catch {
-    throw new Error('Failed to reconstruct decrypted message.');
-  }
-}
-
-/**
- * Helper to convert Uint8Array to URL-safe / standard Base64 string
- */
-export function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-/**
- * Helper to convert Base64 string back to Uint8Array
- */
-export function base64ToBytes(base64: string): Uint8Array {
-  const binaryString = atob(base64.trim());
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
-
-/**
- * Detects whether the binary payload contains a QBS Message ('QBS1') or a QBS File ('QBSF').
- */
-export function detectPayloadType(payload: Uint8Array): QbsPayloadType {
-  if (!payload || payload.length < 4) {
-    throw new Error('This does not appear to be a valid QBS Secure Sound file.');
-  }
-
-  // 'QBS1' -> Message
-  if (
-    payload[0] === MAGIC_HEADER_MESSAGE[0] &&
-    payload[1] === MAGIC_HEADER_MESSAGE[1] &&
-    payload[2] === MAGIC_HEADER_MESSAGE[2] &&
-    payload[3] === MAGIC_HEADER_MESSAGE[3]
-  ) {
-    return 'message';
-  }
-
-  // 'QBSF' -> File
-  if (
-    payload[0] === MAGIC_HEADER_FILE[0] &&
-    payload[1] === MAGIC_HEADER_FILE[1] &&
-    payload[2] === MAGIC_HEADER_FILE[2] &&
-    payload[3] === MAGIC_HEADER_FILE[3]
-  ) {
-    return 'file';
-  }
-
-  throw new Error('This does not appear to be a valid QBS Secure Sound file.');
-}
-
-export interface PayloadInfo {
-  type: QbsPayloadType;
-  version: number;
-  filename?: string;
-  mimeType?: string;
-  originalSizeBytes?: number;
-  payloadSizeBytes: number;
-}
-
-/**
- * Inspects the payload header metadata without requiring password decryption.
- */
-export function inspectPayloadInfo(payload: Uint8Array): PayloadInfo {
-  const type = detectPayloadType(payload);
-  const version = payload[4];
-
-  if (type === 'message') {
-    return {
-      type: 'message',
-      version,
-      payloadSizeBytes: payload.length,
-    };
-  }
-
-  // For 'file' type, read unencrypted metadata header:
-  // Offset 0..3: QBSF
-  // Offset 4: Version
-  // Offset 5: AlgId
-  // Offset 6..21: Salt (16 bytes)
-  // Offset 22..33: IV (12 bytes)
-  // Offset 34..35: Filename length (Uint16 BE)
-  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  let offset = 34;
-
-  if (offset + 2 > payload.length) {
-    throw new Error('The audio does not contain a valid QBS secure payload.');
-  }
-
-  const filenameLen = view.getUint16(offset, false);
-  offset += 2;
-
-  if (offset + filenameLen + 2 > payload.length) {
-    throw new Error('The audio does not contain a valid QBS secure payload.');
-  }
-
-  const filenameBytes = payload.subarray(offset, offset + filenameLen);
-  offset += filenameLen;
-  const decoder = new TextDecoder('utf-8');
-  const filename = decoder.decode(filenameBytes) || 'unnamed-file';
-
-  const mimeLen = view.getUint16(offset, false);
-  offset += 2;
-
-  if (offset + mimeLen + 4 > payload.length) {
-    throw new Error('The audio does not contain a valid QBS secure payload.');
-  }
-
-  const mimeBytes = payload.subarray(offset, offset + mimeLen);
-  offset += mimeLen;
-  const mimeType = decoder.decode(mimeBytes) || 'application/octet-stream';
-
-  const originalSizeBytes = view.getUint32(offset, false);
-
-  return {
-    type: 'file',
-    version,
-    filename,
-    mimeType,
-    originalSizeBytes,
-    payloadSizeBytes: payload.length,
-  };
-}
-
-/**
- * Encrypts a binary file into a QBSF container format:
- * [4 bytes Magic "QBSF"]
- * [1 byte Version = 1]
- * [1 byte Alg ID = 1 (AES-256-GCM)]
- * [16 bytes Salt]
- * [12 bytes IV]
- * [2 bytes Filename Length (Uint16 BE)]
- * [N bytes Filename (UTF-8)]
- * [2 bytes MIME Length (Uint16 BE)]
- * [M bytes MIME Type (UTF-8)]
- * [4 bytes Original Size (Uint32 BE)]
- * [4 bytes Ciphertext Length (Uint32 BE)]
- * [C bytes Ciphertext + GCM Tag]
- * [4 bytes CRC32 Checksum (Uint32 BE)]
+ * Encrypts a binary file into the QBS-Secure v2 authenticated container.
  */
 export async function encryptFile(
   fileBytes: Uint8Array,
@@ -403,101 +302,280 @@ export async function encryptFile(
     throw new Error('Please enter a password.');
   }
 
-  onProgress?.('Preparing file for encryption...', 15);
-
-  // Clean filename and fallback mime
+  onProgress?.('Analyzing file and compressing...', 15);
   const cleanFilename = (filename || 'file.bin').replace(/[/\\]/g, '_');
   const cleanMime = mimeType || 'application/octet-stream';
 
-  const textEncoder = new TextEncoder();
-  const filenameBytes = textEncoder.encode(cleanFilename);
-  const mimeBytes = textEncoder.encode(cleanMime);
+  // 1. Pre-encryption compression
+  const { compressed, wasCompressed } = await compressData(fileBytes);
 
-  if (filenameBytes.length > 1024) {
-    throw new Error('Filename is too long.');
-  }
-  if (mimeBytes.length > 512) {
-    throw new Error('MIME type is too long.');
-  }
+  // 2. Encode structured metadata JSON
+  const metadataObj = {
+    name: cleanFilename,
+    mime: cleanMime,
+    origSize: fileBytes.byteLength,
+  };
+  const metadataBytes = new TextEncoder().encode(JSON.stringify(metadataObj));
 
-  onProgress?.('Deriving cryptographic key...', 35);
-  // Generate random salt and IV
+  onProgress?.('Generating cryptographic salt & 96-bit nonce...', 30);
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
   const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
 
-  // Derive AES-256-GCM key from password
-  const key = await deriveKeyFromPassword(password, salt);
+  onProgress?.('Deriving 256-bit key with Argon2id (64MB memory hardness)...', 55);
+  const { key, rawKey } = await deriveKeyArgon2id(
+    password,
+    salt,
+    ARGON2_TIME_COST,
+    ARGON2_MEMORY_COST_KB,
+    ARGON2_PARALLELISM
+  );
 
-  onProgress?.('Encrypting file contents with AES-256-GCM...', 60);
+  // 3. Assemble Header for Authenticated Additional Data (AAD)
+  const headerLen = 4 + 1 + 1 + 1 + 1 + 4 + 4 + 1 + SALT_LENGTH + IV_LENGTH + 2 + metadataBytes.length + 4;
+  const headerAad = new Uint8Array(headerLen);
+  const view = new DataView(headerAad.buffer);
 
-  // Encrypt with AES-GCM (appends 16-byte authentication tag)
+  let offset = 0;
+  headerAad.set(MAGIC_HEADER_SECURE, offset);
+  offset += 4;
+
+  headerAad[offset++] = PROTOCOL_VERSION_2;
+  headerAad[offset++] = 2; // 2 = File
+  headerAad[offset++] = KDF_ID_ARGON2ID;
+  headerAad[offset++] = wasCompressed ? 1 : 0;
+
+  view.setUint32(offset, ARGON2_TIME_COST, false);
+  offset += 4;
+  view.setUint32(offset, ARGON2_MEMORY_COST_KB, false);
+  offset += 4;
+  headerAad[offset++] = ARGON2_PARALLELISM;
+
+  headerAad.set(salt, offset);
+  offset += SALT_LENGTH;
+
+  headerAad.set(iv, offset);
+  offset += IV_LENGTH;
+
+  view.setUint16(offset, metadataBytes.length, false);
+  offset += 2;
+  headerAad.set(metadataBytes, offset);
+  offset += metadataBytes.length;
+
+  const expectedCiphertextLen = compressed.length + 16;
+  view.setUint32(offset, expectedCiphertextLen, false);
+
+  onProgress?.('Encrypting file with AES-256-GCM & AAD integrity binding...', 80);
+
+  // 4. Encrypt with AES-GCM using AAD
   const ciphertextBuffer = await crypto.subtle.encrypt(
     {
       name: 'AES-GCM',
       iv: iv as BufferSource,
+      additionalData: headerAad as BufferSource,
     },
     key,
-    fileBytes as BufferSource
+    compressed as BufferSource
   );
 
-  const ciphertextBytes = new Uint8Array(ciphertextBuffer);
+  const ciphertext = new Uint8Array(ciphertextBuffer);
 
-  onProgress?.('Packing QBS container & calculating integrity...', 85);
+  // 5. Assemble complete container
+  const totalLength = headerLen + ciphertext.length + 4;
+  const container = new Uint8Array(totalLength);
+  const containerView = new DataView(container.buffer);
 
-  // Calculate container length
-  // 4 (Magic) + 1 (Ver) + 1 (Alg) + 16 (Salt) + 12 (IV)
-  // + 2 (NameLen) + N (Name) + 2 (MimeLen) + M (Mime)
-  // + 4 (OriginalSize) + 4 (CiphertextLen) + C (Ciphertext) + 4 (CRC32)
-  const headerLength = 4 + 1 + 1 + SALT_LENGTH + IV_LENGTH + 2 + filenameBytes.length + 2 + mimeBytes.length + 4 + 4;
-  const totalLength = headerLength + ciphertextBytes.length + 4;
+  container.set(headerAad, 0);
+  container.set(ciphertext, headerLen);
 
-  const payload = new Uint8Array(totalLength);
-  const view = new DataView(payload.buffer);
+  const crc = calculateCRC32(container.subarray(0, headerLen + ciphertext.length));
+  containerView.setUint32(headerLen + ciphertext.length, crc, false);
 
-  let offset = 0;
-  payload.set(MAGIC_HEADER_FILE, offset);
-  offset += 4;
+  // 6. Memory cleanup
+  zeroMemory(rawKey);
 
-  payload[offset++] = PROTOCOL_VERSION;
-  payload[offset++] = ALGORITHM_ID;
-
-  payload.set(salt, offset);
-  offset += SALT_LENGTH;
-
-  payload.set(iv, offset);
-  offset += IV_LENGTH;
-
-  view.setUint16(offset, filenameBytes.length, false);
-  offset += 2;
-  payload.set(filenameBytes, offset);
-  offset += filenameBytes.length;
-
-  view.setUint16(offset, mimeBytes.length, false);
-  offset += 2;
-  payload.set(mimeBytes, offset);
-  offset += mimeBytes.length;
-
-  view.setUint32(offset, fileBytes.byteLength, false);
-  offset += 4;
-
-  view.setUint32(offset, ciphertextBytes.length, false);
-  offset += 4;
-
-  payload.set(ciphertextBytes, offset);
-  offset += ciphertextBytes.length;
-
-  // Compute CRC32
-  const dataForCrc = payload.subarray(0, offset);
-  const crc = calculateCRC32(dataForCrc);
-  view.setUint32(offset, crc, false);
-
-  onProgress?.('Secure file payload generated', 100);
-
-  return payload;
+  onProgress?.('Secure file package generated', 100);
+  return container;
 }
 
 /**
- * Decrypts a QBSF binary payload into the original file with authentic metadata.
+ * Decrypts a QBS-Secure payload (supporting both v2 QBSS and v1 legacy formats).
+ */
+export async function decryptPayload(
+  payload: Uint8Array,
+  password: string,
+  onProgress?: (step: string, percent: number) => void
+): Promise<string> {
+  if (!password || password.length === 0) {
+    throw new Error('Please enter a password.');
+  }
+
+  // Minimum sanity check
+  if (!payload || payload.length < 50) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  // Check Magic header
+  const isV2 =
+    payload[0] === MAGIC_HEADER_SECURE[0] &&
+    payload[1] === MAGIC_HEADER_SECURE[1] &&
+    payload[2] === MAGIC_HEADER_SECURE[2] &&
+    payload[3] === MAGIC_HEADER_SECURE[3];
+
+  const isV1Message =
+    payload[0] === MAGIC_HEADER_MESSAGE[0] &&
+    payload[1] === MAGIC_HEADER_MESSAGE[1] &&
+    payload[2] === MAGIC_HEADER_MESSAGE[2] &&
+    payload[3] === MAGIC_HEADER_MESSAGE[3];
+
+  if (!isV2 && !isV1Message) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  // -------------------------------------------------------------
+  // v1 Legacy Message Fallback
+  // -------------------------------------------------------------
+  if (isV1Message) {
+    return await decryptLegacyV1Message(payload, password);
+  }
+
+  // -------------------------------------------------------------
+  // v2 QBS-Secure Protocol Decoder
+  // -------------------------------------------------------------
+  onProgress?.('Validating container structure & outer CRC32...', 20);
+
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const version = payload[4];
+  if (version !== PROTOCOL_VERSION_2) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  const payloadType = payload[5]; // 1 = Message, 2 = File
+  const kdfId = payload[6]; // 1 = PBKDF2, 2 = Argon2id
+  const isCompressed = payload[7] === 1;
+
+  const timeCost = view.getUint32(8, false);
+  const memoryCostKb = view.getUint32(12, false);
+  const parallelism = payload[16];
+
+  let offset = 17;
+  const salt = payload.subarray(offset, offset + SALT_LENGTH);
+  offset += SALT_LENGTH;
+
+  const iv = payload.subarray(offset, offset + IV_LENGTH);
+  offset += IV_LENGTH;
+
+  const metadataLen = view.getUint16(offset, false);
+  offset += 2;
+
+  if (offset + metadataLen + 4 > payload.length) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  offset += metadataLen;
+
+  const ciphertextLen = view.getUint32(offset, false);
+  offset += 4;
+
+  const headerLen = offset;
+  const headerAad = payload.subarray(0, headerLen);
+
+  if (headerLen + ciphertextLen + 4 !== payload.length) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  const ciphertext = payload.subarray(headerLen, headerLen + ciphertextLen);
+
+  // Validate outer CRC32
+  const storedCrc = view.getUint32(headerLen + ciphertextLen, false);
+  const calculatedCrc = calculateCRC32(payload.subarray(0, headerLen + ciphertextLen));
+  if (storedCrc !== calculatedCrc) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  onProgress?.('Deriving cryptographic key with Argon2id...', 45);
+
+  let key: CryptoKey;
+  let rawKey: Uint8Array | null = null;
+
+  try {
+    if (kdfId === KDF_ID_ARGON2ID) {
+      const derived = await deriveKeyArgon2id(password, salt, timeCost, memoryCostKb, parallelism);
+      key = derived.key;
+      rawKey = derived.rawKey;
+    } else {
+      key = await deriveKeyPBKDF2(password, salt, timeCost || PBKDF2_ITERATIONS);
+    }
+  } catch {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  onProgress?.('Verifying AES-256-GCM authentication tag & AAD binding...', 75);
+
+  let decryptedBuffer: ArrayBuffer;
+  try {
+    decryptedBuffer = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: iv as BufferSource,
+        additionalData: headerAad as BufferSource,
+      },
+      key,
+      ciphertext as BufferSource
+    );
+  } catch {
+    // If decryption fails and user has trailing/leading whitespace, try trimmed password
+    if (password.trim() !== password && password.trim().length > 0) {
+      try {
+        let trimmedKey: CryptoKey;
+        if (kdfId === KDF_ID_ARGON2ID) {
+          const derived = await deriveKeyArgon2id(password.trim(), salt, timeCost, memoryCostKb, parallelism);
+          trimmedKey = derived.key;
+          if (rawKey) zeroMemory(rawKey);
+          rawKey = derived.rawKey;
+        } else {
+          trimmedKey = await deriveKeyPBKDF2(password.trim(), salt, timeCost || PBKDF2_ITERATIONS);
+        }
+        decryptedBuffer = await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: iv as BufferSource,
+            additionalData: headerAad as BufferSource,
+          },
+          trimmedKey,
+          ciphertext as BufferSource
+        );
+      } catch {
+        if (rawKey) zeroMemory(rawKey);
+        throw new Error(GENERIC_AUTH_ERROR);
+      }
+    } else {
+      if (rawKey) zeroMemory(rawKey);
+      throw new Error(GENERIC_AUTH_ERROR);
+    }
+  }
+
+  if (rawKey) zeroMemory(rawKey);
+
+  onProgress?.('Reconstructing authentic message...', 95);
+
+  try {
+    let plainBytes = new Uint8Array(decryptedBuffer);
+
+    // Decompress if compressed
+    if (isCompressed) {
+      plainBytes = await decompressData(plainBytes);
+    }
+
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(plainBytes);
+    zeroMemory(plainBytes);
+    return text;
+  } catch {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+}
+
+/**
+ * Decrypts a file payload (supporting both v2 QBSS and v1 QBSF containers).
  */
 export async function decryptFilePayload(
   payload: Uint8Array,
@@ -508,60 +586,357 @@ export async function decryptFilePayload(
     throw new Error('Please enter a password.');
   }
 
-  // Minimum size check: Magic(4) + Ver(1) + Alg(1) + Salt(16) + IV(12) + NameLen(2) + MimeLen(2) + OrigSize(4) + CipherLen(4) + Tag(16) + CRC(4) = 66 bytes
-  if (!payload || payload.length < 66) {
-    throw new Error('The audio does not contain a valid QBS secure payload.');
+  if (!payload || payload.length < 50) {
+    throw new Error(GENERIC_AUTH_ERROR);
   }
 
-  onProgress?.('Verifying container integrity...', 20);
+  const isV2 =
+    payload[0] === MAGIC_HEADER_SECURE[0] &&
+    payload[1] === MAGIC_HEADER_SECURE[1] &&
+    payload[2] === MAGIC_HEADER_SECURE[2] &&
+    payload[3] === MAGIC_HEADER_SECURE[3];
 
-  // Validate magic header
-  if (
-    payload[0] !== MAGIC_HEADER_FILE[0] ||
-    payload[1] !== MAGIC_HEADER_FILE[1] ||
-    payload[2] !== MAGIC_HEADER_FILE[2] ||
-    payload[3] !== MAGIC_HEADER_FILE[3]
-  ) {
-    throw new Error('The audio does not contain a valid QBS secure payload.');
+  const isV1File =
+    payload[0] === MAGIC_HEADER_FILE[0] &&
+    payload[1] === MAGIC_HEADER_FILE[1] &&
+    payload[2] === MAGIC_HEADER_FILE[2] &&
+    payload[3] === MAGIC_HEADER_FILE[3];
+
+  if (!isV2 && !isV1File) {
+    throw new Error(GENERIC_AUTH_ERROR);
   }
 
-  const version = payload[4];
-  if (version !== PROTOCOL_VERSION) {
-    throw new Error(`Unsupported QBS version (v${version}). Please use a compatible version.`);
+  // -------------------------------------------------------------
+  // v1 Legacy File Fallback
+  // -------------------------------------------------------------
+  if (isV1File) {
+    return await decryptLegacyV1File(payload, password, onProgress);
   }
 
-  const algId = payload[5];
-  if (algId !== ALGORITHM_ID) {
-    throw new Error('Unsupported algorithm identifier.');
-  }
+  // -------------------------------------------------------------
+  // v2 QBS-Secure File Decoder
+  // -------------------------------------------------------------
+  onProgress?.('Validating QBS-Secure container integrity...', 20);
 
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const version = payload[4];
+  if (version !== PROTOCOL_VERSION_2) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
 
-  let offset = 6;
-  const salt = payload.slice(offset, offset + SALT_LENGTH);
+  const payloadType = payload[5]; // 2 = File
+  const kdfId = payload[6]; // 2 = Argon2id
+  const isCompressed = payload[7] === 1;
+
+  const timeCost = view.getUint32(8, false);
+  const memoryCostKb = view.getUint32(12, false);
+  const parallelism = payload[16];
+
+  let offset = 17;
+  const salt = payload.subarray(offset, offset + SALT_LENGTH);
   offset += SALT_LENGTH;
 
-  const iv = payload.slice(offset, offset + IV_LENGTH);
+  const iv = payload.subarray(offset, offset + IV_LENGTH);
+  offset += IV_LENGTH;
+
+  const metadataLen = view.getUint16(offset, false);
+  offset += 2;
+
+  if (offset + metadataLen + 4 > payload.length) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  const metadataBytes = payload.subarray(offset, offset + metadataLen);
+  offset += metadataLen;
+
+  let metadataObj: { name?: string; mime?: string; origSize?: number } = {};
+  try {
+    const metaStr = new TextDecoder('utf-8').decode(metadataBytes);
+    metadataObj = JSON.parse(metaStr);
+  } catch {
+    metadataObj = {};
+  }
+
+  const ciphertextLen = view.getUint32(offset, false);
+  offset += 4;
+
+  const headerLen = offset;
+  const headerAad = payload.subarray(0, headerLen);
+
+  if (headerLen + ciphertextLen + 4 !== payload.length) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  const ciphertext = payload.subarray(headerLen, headerLen + ciphertextLen);
+
+  // Validate outer CRC32
+  const storedCrc = view.getUint32(headerLen + ciphertextLen, false);
+  const calculatedCrc = calculateCRC32(payload.subarray(0, headerLen + ciphertextLen));
+  if (storedCrc !== calculatedCrc) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  onProgress?.('Deriving cryptographic key with Argon2id...', 45);
+
+  let key: CryptoKey;
+  let rawKey: Uint8Array | null = null;
+
+  try {
+    if (kdfId === KDF_ID_ARGON2ID) {
+      const derived = await deriveKeyArgon2id(password, salt, timeCost, memoryCostKb, parallelism);
+      key = derived.key;
+      rawKey = derived.rawKey;
+    } else {
+      key = await deriveKeyPBKDF2(password, salt, timeCost || PBKDF2_ITERATIONS);
+    }
+  } catch {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  onProgress?.('Verifying AES-256-GCM authentication tag & AAD binding...', 75);
+
+  let decryptedBuffer: ArrayBuffer;
+  try {
+    decryptedBuffer = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: iv as BufferSource,
+        additionalData: headerAad as BufferSource,
+      },
+      key,
+      ciphertext as BufferSource
+    );
+  } catch {
+    if (rawKey) zeroMemory(rawKey);
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  if (rawKey) zeroMemory(rawKey);
+
+  onProgress?.('Reconstructing authentic file data...', 95);
+
+  try {
+    let plainBytes = new Uint8Array(decryptedBuffer);
+
+    // Decompress if compressed
+    if (isCompressed) {
+      plainBytes = await decompressData(plainBytes);
+    }
+
+    const filename = metadataObj.name || 'decrypted-file';
+    const mimeType = metadataObj.mime || 'application/octet-stream';
+    const sizeBytes = metadataObj.origSize || plainBytes.byteLength;
+
+    const blob = new Blob([plainBytes], { type: mimeType });
+    const objectUrl = URL.createObjectURL(blob);
+
+    onProgress?.('Decryption complete', 100);
+
+    return {
+      data: plainBytes,
+      filename,
+      mimeType,
+      sizeBytes,
+      blob,
+      objectUrl,
+    };
+  } catch {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+}
+
+/**
+ * Inspects payload header metadata safely without requiring password or key derivation.
+ */
+export interface PayloadInfo {
+  type: QbsPayloadType;
+  version: number;
+  kdf: KdfType;
+  kdfParams?: {
+    timeCost: number;
+    memoryCostKb: number;
+  };
+  isCompressed?: boolean;
+  filename?: string;
+  mimeType?: string;
+  originalSizeBytes?: number;
+  payloadSizeBytes: number;
+}
+
+export function inspectPayloadInfo(payload: Uint8Array): PayloadInfo {
+  if (!payload || payload.length < 4) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  // v2 QBSS
+  if (
+    payload[0] === MAGIC_HEADER_SECURE[0] &&
+    payload[1] === MAGIC_HEADER_SECURE[1] &&
+    payload[2] === MAGIC_HEADER_SECURE[2] &&
+    payload[3] === MAGIC_HEADER_SECURE[3]
+  ) {
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    const version = payload[4];
+    const payloadTypeNum = payload[5]; // 1 = Message, 2 = File
+    const kdfId = payload[6];
+    const isCompressed = payload[7] === 1;
+    const timeCost = view.getUint32(8, false);
+    const memoryCostKb = view.getUint32(12, false);
+
+    const type: QbsPayloadType = payloadTypeNum === 2 ? 'file' : 'message';
+    const kdf: KdfType = kdfId === KDF_ID_ARGON2ID ? 'argon2id' : 'pbkdf2';
+
+    if (type === 'message') {
+      return {
+        type: 'message',
+        version,
+        kdf,
+        kdfParams: { timeCost, memoryCostKb },
+        isCompressed,
+        payloadSizeBytes: payload.length,
+      };
+    }
+
+    // Read metadata JSON for file
+    let filename = 'secure-file';
+    let mimeType = 'application/octet-stream';
+    let originalSizeBytes = 0;
+
+    try {
+      const metadataOffset = 17 + SALT_LENGTH + IV_LENGTH;
+      const metadataLen = view.getUint16(metadataOffset, false);
+      const metadataBytes = payload.subarray(metadataOffset + 2, metadataOffset + 2 + metadataLen);
+      const metaStr = new TextDecoder('utf-8').decode(metadataBytes);
+      const meta = JSON.parse(metaStr);
+      filename = meta.name || filename;
+      mimeType = meta.mime || mimeType;
+      originalSizeBytes = meta.origSize || 0;
+    } catch {
+      // Safe fallback
+    }
+
+    return {
+      type: 'file',
+      version,
+      kdf,
+      kdfParams: { timeCost, memoryCostKb },
+      isCompressed,
+      filename,
+      mimeType,
+      originalSizeBytes,
+      payloadSizeBytes: payload.length,
+    };
+  }
+
+  // v1 Legacy Message
+  if (
+    payload[0] === MAGIC_HEADER_MESSAGE[0] &&
+    payload[1] === MAGIC_HEADER_MESSAGE[1] &&
+    payload[2] === MAGIC_HEADER_MESSAGE[2] &&
+    payload[3] === MAGIC_HEADER_MESSAGE[3]
+  ) {
+    return {
+      type: 'message',
+      version: payload[4],
+      kdf: 'pbkdf2',
+      payloadSizeBytes: payload.length,
+    };
+  }
+
+  // v1 Legacy File
+  if (
+    payload[0] === MAGIC_HEADER_FILE[0] &&
+    payload[1] === MAGIC_HEADER_FILE[1] &&
+    payload[2] === MAGIC_HEADER_FILE[2] &&
+    payload[3] === MAGIC_HEADER_FILE[3]
+  ) {
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    let offset = 34;
+    const filenameLen = view.getUint16(offset, false);
+    offset += 2;
+    const filename = new TextDecoder('utf-8').decode(payload.subarray(offset, offset + filenameLen));
+    offset += filenameLen;
+    const mimeLen = view.getUint16(offset, false);
+    offset += 2;
+    const mimeType = new TextDecoder('utf-8').decode(payload.subarray(offset, offset + mimeLen));
+    offset += mimeLen;
+    const originalSizeBytes = view.getUint32(offset, false);
+
+    return {
+      type: 'file',
+      version: payload[4],
+      kdf: 'pbkdf2',
+      filename,
+      mimeType,
+      originalSizeBytes,
+      payloadSizeBytes: payload.length,
+    };
+  }
+
+  throw new Error(GENERIC_AUTH_ERROR);
+}
+
+export function detectPayloadType(payload: Uint8Array): QbsPayloadType {
+  const info = inspectPayloadInfo(payload);
+  return info.type;
+}
+
+// -----------------------------------------------------------------
+// Legacy Decoders (Backward Compatibility)
+// -----------------------------------------------------------------
+
+async function decryptLegacyV1Message(payload: Uint8Array, password: string): Promise<string> {
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  let offset = 6;
+  const salt = payload.subarray(offset, offset + SALT_LENGTH);
+  offset += SALT_LENGTH;
+  const iv = payload.subarray(offset, offset + IV_LENGTH);
+  offset += IV_LENGTH;
+  const ciphertextLen = view.getUint32(offset, false);
+  offset += 4;
+  const ciphertext = payload.subarray(offset, offset + ciphertextLen);
+  offset += ciphertextLen;
+  const storedCrc = view.getUint32(offset, false);
+
+  const calculatedCrc = calculateCRC32(payload.subarray(0, offset));
+  if (storedCrc !== calculatedCrc) {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+
+  const key = await deriveKeyPBKDF2(password, salt);
+  try {
+    const decryptedBuffer = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv as BufferSource },
+      key,
+      ciphertext as BufferSource
+    );
+    return new TextDecoder('utf-8', { fatal: true }).decode(decryptedBuffer);
+  } catch {
+    throw new Error(GENERIC_AUTH_ERROR);
+  }
+}
+
+async function decryptLegacyV1File(
+  payload: Uint8Array,
+  password: string,
+  onProgress?: (step: string, percent: number) => void
+): Promise<DecryptedFileResult> {
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  let offset = 6;
+  const salt = payload.subarray(offset, offset + SALT_LENGTH);
+  offset += SALT_LENGTH;
+  const iv = payload.subarray(offset, offset + IV_LENGTH);
   offset += IV_LENGTH;
 
   const filenameLen = view.getUint16(offset, false);
   offset += 2;
-  if (offset + filenameLen > payload.length) {
-    throw new Error('Failed to reconstruct decrypted file.');
-  }
-  const filenameBytes = payload.subarray(offset, offset + filenameLen);
+  const filename = new TextDecoder('utf-8').decode(payload.subarray(offset, offset + filenameLen));
   offset += filenameLen;
-  const decoder = new TextDecoder('utf-8');
-  const filename = decoder.decode(filenameBytes) || 'decrypted-file';
 
   const mimeLen = view.getUint16(offset, false);
   offset += 2;
-  if (offset + mimeLen > payload.length) {
-    throw new Error('Failed to reconstruct decrypted file.');
-  }
-  const mimeBytes = payload.subarray(offset, offset + mimeLen);
+  const mimeType = new TextDecoder('utf-8').decode(payload.subarray(offset, offset + mimeLen));
   offset += mimeLen;
-  const mimeType = decoder.decode(mimeBytes) || 'application/octet-stream';
 
   const originalSizeBytes = view.getUint32(offset, false);
   offset += 4;
@@ -569,71 +944,25 @@ export async function decryptFilePayload(
   const ciphertextLen = view.getUint32(offset, false);
   offset += 4;
 
-  if (offset + ciphertextLen + 4 !== payload.length) {
-    throw new Error('Failed to reconstruct decrypted file.');
-  }
-
-  const ciphertext = payload.slice(offset, offset + ciphertextLen);
+  const ciphertext = payload.subarray(offset, offset + ciphertextLen);
   offset += ciphertextLen;
 
-  // Validate CRC32
   const storedCrc = view.getUint32(offset, false);
-  const dataForCrc = payload.subarray(0, offset);
-  const calculatedCrc = calculateCRC32(dataForCrc);
-
+  const calculatedCrc = calculateCRC32(payload.subarray(0, offset));
   if (storedCrc !== calculatedCrc) {
-    throw new Error('Integrity check failed. The encrypted data has been altered.');
+    throw new Error(GENERIC_AUTH_ERROR);
   }
 
-  onProgress?.('Deriving decryption key...', 50);
-
-  // Derive AES key and decrypt with primary password or trimmed fallback
-  let decryptedBuffer: ArrayBuffer | null = null;
-
+  const key = await deriveKeyPBKDF2(password, salt);
   try {
-    const key = await deriveKeyFromPassword(password, salt);
-    onProgress?.('Decrypting file with AES-256-GCM...', 75);
-    decryptedBuffer = await crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv as BufferSource,
-      },
+    const decryptedBuffer = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv as BufferSource },
       key,
       ciphertext as BufferSource
     );
-  } catch {
-    // If decryption fails and password has leading/trailing whitespace, try trimmed password
-    if (password.trim() !== password && password.trim().length > 0) {
-      try {
-        const trimmedKey = await deriveKeyFromPassword(password.trim(), salt);
-        onProgress?.('Decrypting file with AES-256-GCM...', 75);
-        decryptedBuffer = await crypto.subtle.decrypt(
-          {
-            name: 'AES-GCM',
-            iv: iv as BufferSource,
-          },
-          trimmedKey,
-          ciphertext as BufferSource
-        );
-      } catch {
-        throw new Error('Unable to decrypt. Check the password or audio file.');
-      }
-    } else {
-      throw new Error('Unable to decrypt. Check the password or audio file.');
-    }
-  }
-
-  onProgress?.('Reconstructing original file...', 95);
-
-  try {
     const data = new Uint8Array(decryptedBuffer);
-
-    // Create safe Blob and Object URL
     const blob = new Blob([data], { type: mimeType });
     const objectUrl = URL.createObjectURL(blob);
-
-    onProgress?.('Decryption complete', 100);
-
     return {
       data,
       filename,
@@ -643,7 +972,28 @@ export async function decryptFilePayload(
       objectUrl,
     };
   } catch {
-    throw new Error('Failed to reconstruct decrypted file.');
+    throw new Error(GENERIC_AUTH_ERROR);
   }
 }
 
+/**
+ * Base64 helper methods
+ */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+export function base64ToBytes(base64: string): Uint8Array {
+  const binaryString = atob(base64.trim());
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}

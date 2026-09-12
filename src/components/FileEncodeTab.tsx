@@ -10,6 +10,7 @@ import { encryptFile, inspectPayloadInfo, decryptFilePayload } from '../lib/cryp
 import { synthesizeFskPcm, buildWavFile, generateFilename, extractPayloadFromWav } from '../lib/audioCodec';
 import { generateEncryptedQrCode } from '../lib/qr';
 import { AudioVisualizer } from './AudioVisualizer';
+import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
 
 interface FileEncodeTabProps {
   onTestDecode: (blob: Blob, filename: string, payload: Uint8Array, password?: string) => void;
@@ -338,6 +339,8 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
         rawPayload: payload,
         timestamp: Date.now(),
         payloadType: 'file',
+        kdfType: 'argon2id',
+        isCompressed: true,
         fileMetadata: {
           originalName: file.name,
           mimeType: file.type || 'application/octet-stream',
@@ -769,6 +772,15 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
               Passwords do not match.
             </p>
           )}
+
+          {/* Password Strength & Entropy Meter */}
+          <PasswordStrengthIndicator
+            password={password}
+            onSelectPassphrase={(gen) => {
+              setPassword(gen);
+              setConfirmPassword(gen);
+            }}
+          />
 
           {/* Generate Button & Progress */}
           {!generatedSound && (

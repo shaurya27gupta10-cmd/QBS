@@ -4,11 +4,21 @@ export type EncodeMode = 'message' | 'file';
 
 export type QbsPayloadType = 'message' | 'file';
 
+export type KdfType = 'argon2id' | 'pbkdf2';
+
 export type FileCategory = 'all' | 'image' | 'video' | 'audio' | 'document' | 'other';
+
+export interface KdfParameters {
+  type: KdfType;
+  timeCost: number; // iterations
+  memoryCostKb: number; // memory hardness in KB (e.g. 65536 = 64MB for Argon2id)
+  parallelism: number; // threads
+}
 
 export interface EncryptedPayload {
   version: number;
-  algorithm: string; // e.g. 'AES-GCM-256'
+  algorithm: string; // e.g. 'AES-256-GCM-ARGON2ID'
+  kdf: KdfType;
   salt: Uint8Array; // 16 bytes
   iv: Uint8Array; // 12 bytes
   ciphertext: Uint8Array; // encrypted data + 16-byte auth tag
@@ -18,6 +28,7 @@ export interface EncryptedPayload {
 export interface EncryptedFileContainer {
   version: number;
   algorithmId: number;
+  kdf: KdfType;
   filename: string;
   mimeType: string;
   originalSizeBytes: number;
@@ -45,6 +56,8 @@ export interface GeneratedSound {
   rawPayload: Uint8Array;
   timestamp: number;
   payloadType: QbsPayloadType;
+  kdfType?: KdfType;
+  isCompressed?: boolean;
   fileMetadata?: {
     originalName: string;
     mimeType: string;
@@ -57,6 +70,13 @@ export interface DecodeState {
   progressMessage?: string;
   error?: string;
   payloadType?: QbsPayloadType;
+  kdfType?: KdfType;
+  kdfParams?: {
+    memoryKb: number;
+    iterations: number;
+  };
+  isCompressed?: boolean;
+  aadVerified?: boolean;
   decryptedMessage?: string;
   decryptedFile?: DecryptedFileResult;
 }
@@ -67,5 +87,14 @@ export interface QrCodeData {
   fitsQr: boolean;
   payloadSize: number;
   warning?: string;
+}
+
+export interface SecurityAuditTest {
+  id: string;
+  name: string;
+  description: string;
+  status: 'pending' | 'running' | 'passed' | 'failed';
+  durationMs?: number;
+  details?: string;
 }
 

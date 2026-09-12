@@ -3,7 +3,7 @@ import {
   Lock, Eye, EyeOff, Play, Pause, Download, Share2, 
   RotateCcw, QrCode, Check, AlertCircle, Sparkles, 
   FileAudio, Volume2, ShieldCheck, CheckCircle2, FlaskConical,
-  MessageSquare, FolderLock
+  MessageSquare, FolderLock, Shield
 } from 'lucide-react';
 import { encryptMessage } from '../lib/crypto';
 import { synthesizeFskPcm, buildWavFile, generateFilename, extractPayloadFromWav } from '../lib/audioCodec';
@@ -11,6 +11,7 @@ import { generateEncryptedQrCode, QrResult } from '../lib/qr';
 import { AudioVisualizer } from './AudioVisualizer';
 import { GeneratedSound } from '../types';
 import { FileEncodeTab } from './FileEncodeTab';
+import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
 
 interface EncodeViewProps {
   onTestDecode: (blob: Blob, filename: string, payload: Uint8Array, password?: string) => void;
@@ -111,11 +112,13 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
     setAutoVerifySuccess(false);
 
     try {
-      setGenerationStep('Deriving PBKDF2 key & encrypting with AES-256-GCM...');
+      setGenerationStep('Compressing & deriving Argon2id key (64MB memory hardness)...');
       await new Promise((r) => setTimeout(r, 60)); // Yield to UI
 
-      // 1. Encrypt message and create binary payload
-      const payload = await encryptMessage(message, password);
+      // 1. Encrypt message and create binary payload with Argon2id + AES-256-GCM + AAD
+      const payload = await encryptMessage(message, password, (step) => {
+        setGenerationStep(step);
+      });
 
       setGenerationStep('Synthesizing FSK audio carrier frequencies...');
       await new Promise((r) => setTimeout(r, 60));
@@ -158,6 +161,9 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
         audioBuffer,
         rawPayload: payload,
         timestamp: Date.now(),
+        payloadType: 'message',
+        kdfType: 'argon2id',
+        isCompressed: true,
       });
     } catch (err: unknown) {
       console.error(err);
@@ -283,16 +289,16 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
       {/* Header */}
       <div className="mb-6 text-center sm:text-left">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold mb-2">
-          <Lock className="w-3.5 h-3.5" />
-          <span>AES-256-GCM + PBKDF2 Encoder</span>
+          <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
+          <span>QBS-Secure v2 &bull; Argon2id (64MB) + AES-256-GCM (AAD)</span>
         </div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
           {encodeMode === 'message' ? 'Encode Message' : 'Encode File'}
         </h1>
         <p className="mt-1 text-sm sm:text-base text-slate-600">
           {encodeMode === 'message'
-            ? 'Protect your message and turn it into a secure sound.'
-            : 'Protect your file and turn it into a secure sound.'}
+            ? 'Protect your message with memory-hard Argon2id and turn it into a secure sound.'
+            : 'Protect your file with memory-hard Argon2id and turn it into a secure sound.'}
         </p>
       </div>
 
@@ -389,6 +395,15 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
                 )}
               </div>
             )}
+
+            {/* Password Strength & Entropy Meter */}
+            <PasswordStrengthIndicator
+              password={password}
+              onSelectPassphrase={(gen) => {
+                setPassword(gen);
+                setConfirmPassword(gen);
+              }}
+            />
 
             {/* Error banner */}
             {error && (

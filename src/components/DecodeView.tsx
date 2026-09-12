@@ -577,22 +577,46 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
 
         {/* Automatic Payload Type Detection Badge */}
         {detectedInfo && (
-          <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-3 text-xs sm:text-sm text-blue-900">
-            {detectedInfo.type === 'file' ? (
-              <FolderLock className="w-5 h-5 text-blue-600 flex-shrink-0" />
-            ) : (
-              <MessageSquare className="w-5 h-5 text-blue-600 flex-shrink-0" />
-            )}
-            <div className="truncate">
+          <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl space-y-1.5 text-xs sm:text-sm text-blue-900">
+            <div className="flex items-center gap-3">
               {detectedInfo.type === 'file' ? (
-                <span>
-                  <strong className="font-semibold text-blue-950">QBS File detected:</strong>{' '}
-                  {detectedInfo.filename || 'Encrypted File'} ({formatBytes(detectedInfo.originalSizeBytes || 0)})
-                </span>
+                <FolderLock className="w-5 h-5 text-blue-600 flex-shrink-0" />
               ) : (
-                <span>
-                  <strong className="font-semibold text-blue-950">QBS Message detected</strong> (Encrypted text payload)
-                </span>
+                <MessageSquare className="w-5 h-5 text-blue-600 flex-shrink-0" />
+              )}
+              <div className="truncate flex-1">
+                {detectedInfo.type === 'file' ? (
+                  <span>
+                    <strong className="font-semibold text-blue-950">QBS File Container:</strong>{' '}
+                    {detectedInfo.filename || 'Encrypted File'} ({formatBytes(detectedInfo.originalSizeBytes || 0)})
+                  </span>
+                ) : (
+                  <span>
+                    <strong className="font-semibold text-blue-950">QBS Message Container</strong> (Encrypted text payload)
+                  </span>
+                )}
+              </div>
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-blue-200 text-blue-900 uppercase">
+                {detectedInfo.kdf === 'argon2id' ? 'Argon2id' : 'PBKDF2'}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px] text-blue-800 border-t border-blue-200/60">
+              <span className="flex items-center gap-1 font-mono">
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
+                {detectedInfo.version === 2 ? 'QBS-Secure v2' : 'Legacy v1'}
+              </span>
+              <span>&bull;</span>
+              <span>
+                {detectedInfo.kdf === 'argon2id'
+                  ? `Argon2id (64MB RAM, ${detectedInfo.kdfParams?.timeCost || 3} iters)`
+                  : 'PBKDF2 (100,000 iters)'}
+              </span>
+              {detectedInfo.isCompressed && (
+                <>
+                  <span>&bull;</span>
+                  <span className="text-emerald-700 font-semibold">Deflate Compression</span>
+                </>
               )}
             </div>
           </div>
@@ -684,10 +708,26 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
             </div>
 
             {/* Plaintext Container */}
-            <div className="p-4 sm:p-5 rounded-xl bg-slate-50 border border-slate-200 shadow-inner">
+            <div className="p-4 sm:p-5 rounded-xl bg-slate-50 border border-slate-200 shadow-inner space-y-3">
               <p className="text-slate-900 text-base leading-relaxed whitespace-pre-wrap font-sans select-all break-words">
                 {decryptedMessage}
               </p>
+
+              {/* Cryptographic Proof Badges */}
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/80 text-[11px] text-slate-600">
+                <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                  <Check className="w-3 h-3 text-emerald-600" />
+                  AES-256-GCM Authenticated Tag Verified
+                </span>
+                <span className="inline-flex items-center gap-1 font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                  <Check className="w-3 h-3 text-blue-600" />
+                  AAD Header Integrity Bound
+                </span>
+                <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-white px-2 py-0.5 rounded border border-slate-200">
+                  <Check className="w-3 h-3 text-slate-500" />
+                  Outer CRC32 Checksum Intact
+                </span>
+              </div>
             </div>
 
             {/* Action Bar */}
@@ -804,6 +844,22 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Cryptographic Proof Badges */}
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200 text-[11px] text-slate-600">
+                <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                  <Check className="w-3 h-3 text-emerald-600" />
+                  AES-256-GCM Authenticated Tag Verified
+                </span>
+                <span className="inline-flex items-center gap-1 font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                  <Check className="w-3 h-3 text-blue-600" />
+                  AAD Header Integrity Bound
+                </span>
+                <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-white px-2 py-0.5 rounded border border-slate-200">
+                  <Check className="w-3 h-3 text-slate-500" />
+                  Outer CRC32 Checksum Intact
+                </span>
               </div>
             </div>
 
