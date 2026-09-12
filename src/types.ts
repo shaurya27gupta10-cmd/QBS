@@ -87,6 +87,7 @@ export interface QrCodeData {
   fitsQr: boolean;
   payloadSize: number;
   warning?: string;
+  qrPayloadString?: string;
 }
 
 export interface SecurityAuditTest {

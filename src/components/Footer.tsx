@@ -3,9 +3,10 @@ import { ActiveTab } from '../types';
 
 interface FooterProps {
   setActiveTab: (tab: ActiveTab) => void;
+  onOpenTerms?: () => void;
 }
 
-export function Footer({ setActiveTab }: FooterProps) {
+export function Footer({ setActiveTab, onOpenTerms }: FooterProps) {
   return (
     <footer className="bg-white border-t border-slate-200 mt-16">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -57,13 +58,30 @@ export function Footer({ setActiveTab }: FooterProps) {
             >
               Security
             </button>
+            {onOpenTerms && (
+              <button
+                onClick={onOpenTerms}
+                className="text-slate-600 hover:text-blue-600 font-semibold transition-colors flex items-center gap-1"
+                title="View Security, Privacy & Terms of Use"
+              >
+                <span>Terms &amp; Privacy</span>
+              </button>
+            )}
           </div>
         </div>
 
         <div className="mt-8 pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <p>
-            Client-side authenticated encryption via Web Crypto API &bull; Audio synthesis via Web Audio API.
-          </p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span>Client-side authenticated encryption via Web Crypto API &bull; Audio synthesis via Web Audio API.</span>
+            {onOpenTerms && (
+              <button
+                onClick={onOpenTerms}
+                className="text-blue-600 hover:underline font-medium"
+              >
+                Terms &amp; Privacy Policy
+              </button>
+            )}
+          </div>
           <div className="inline-flex items-center gap-1.5 text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 text-[11px] font-medium">
             <Shield className="w-3.5 h-3.5 text-emerald-600" />
             <span>Zero Data Storage &bull; In-Browser Only</span>

@@ -5,13 +5,14 @@ import {
   FileAudio, Volume2, ShieldCheck, CheckCircle2, FlaskConical,
   MessageSquare, FolderLock, Shield
 } from 'lucide-react';
-import { encryptMessage } from '../lib/crypto';
+import { encryptMessage, bytesToBase64 } from '../lib/crypto';
 import { synthesizeFskPcm, buildWavFile, generateFilename, extractPayloadFromWav } from '../lib/audioCodec';
 import { generateEncryptedQrCode, QrResult } from '../lib/qr';
 import { AudioVisualizer } from './AudioVisualizer';
 import { GeneratedSound } from '../types';
 import { FileEncodeTab } from './FileEncodeTab';
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
+import { ShareModal } from './ShareModal';
 
 interface EncodeViewProps {
   onTestDecode: (blob: Blob, filename: string, payload: Uint8Array, password?: string) => void;
@@ -31,6 +32,7 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
   const [generatedSound, setGeneratedSound] = useState<GeneratedSound | null>(null);
   const [qrResult, setQrResult] = useState<QrResult | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
   const [copiedQr, setCopiedQr] = useState(false);
   const [shareSuccess, setShareSuccess] = useState<string | null>(null);
 
@@ -185,39 +187,10 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
     document.body.removeChild(a);
   };
 
-  // Share Sound using Web Share API
-  const handleShareSound = async () => {
+  // Share Sound: Open unified ShareModal
+  const handleShareSound = () => {
     if (!generatedSound) return;
-
-    try {
-      const file = new File([generatedSound.blob], generatedSound.filename, {
-        type: 'audio/wav',
-      });
-
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          title: 'QBS Secure Sound',
-          text: 'Here is an encrypted sound message created with QBS Secure Sound. Unlock it with your shared password.',
-          files: [file],
-        });
-        setShareSuccess('Shared successfully.');
-        setTimeout(() => setShareSuccess(null), 3000);
-      } else if (navigator.share) {
-        await navigator.share({
-          title: 'QBS Secure Sound',
-          text: 'Encrypted sound message generated with QBS Secure Sound.',
-        });
-      } else {
-        // Fallback: trigger download and notify
-        handleDownloadSound();
-        setShareSuccess('Sound file downloaded (Web Share not supported in this browser).');
-        setTimeout(() => setShareSuccess(null), 4000);
-      }
-    } catch (err: unknown) {
-      if ((err as Error).name !== 'AbortError') {
-        handleDownloadSound();
-      }
-    }
+    setShareModalOpen(true);
   };
 
   // Download QR
@@ -237,8 +210,8 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
   // Copy QR data
   const handleCopyQrPayload = () => {
     if (!generatedSound) return;
-    const b64 = btoa(String.fromCharCode(...generatedSound.rawPayload));
-    navigator.clipboard.writeText(`QBS1:${b64}`);
+    const code = qrResult?.qrPayloadString || `QBSS:${bytesToBase64(generatedSound.rawPayload)}`;
+    navigator.clipboard.writeText(code);
     setCopiedQr(true);
     setTimeout(() => setCopiedQr(false), 2500);
   };
@@ -654,25 +627,59 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
                     className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Download QR</span>
+                    <span>Save .PNG</span>
                   </button>
                   <button
                     onClick={handleCopyQrPayload}
                     className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors"
                   >
                     <Check className="w-3.5 h-3.5" />
-                    <span>{copiedQr ? 'Copied!' : 'Copy String'}</span>
+                    <span>{copiedQr ? 'Copied Code!' : 'Copy Code'}</span>
                   </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowQrModal(false);
+                    setShareModalOpen(true);
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold transition-colors"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Share QR &amp; Sound Options</span>
+                </button>
               </div>
             ) : (
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs space-y-2">
-                <p className="font-semibold">
-                  {qrResult.warning || 'Message is too large for a single QR code. Use the QBS Sound file.'}
-                </p>
-                <p className="text-amber-700">
-                  Standard QR codes have density limits for reliable mobile optical scanning. The generated WAV audio sound holds the complete encrypted payload.
-                </p>
+              <div className="space-y-3">
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs space-y-2">
+                  <p className="font-semibold">
+                    {qrResult.warning || 'Message is too large for a single QR code. Use the QBS Sound file.'}
+                  </p>
+                  <p className="text-amber-700">
+                    Standard QR codes have optical density limits. You can still copy the full payload string or share the container file directly.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyQrPayload}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{copiedQr ? 'Copied Code!' : 'Copy Full Code'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowQrModal(false);
+                      setShareModalOpen(true);
+                    }}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>Share Options</span>
+                  </button>
+                </div>
               </div>
             )}
 
@@ -684,6 +691,22 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Unified Share Modal */}
+      {generatedSound && (
+        <ShareModal
+          isOpen={shareModalOpen}
+          onClose={() => setShareModalOpen(false)}
+          title="Share Encrypted Sound Message"
+          filename={generatedSound.filename}
+          soundBlob={generatedSound.blob}
+          rawPayload={generatedSound.rawPayload}
+          qrDataUrl={qrResult?.dataUrl}
+          fitsQr={qrResult?.fitsQr}
+          qrPayloadString={qrResult?.qrPayloadString || `QBSS:${bytesToBase64(generatedSound.rawPayload)}`}
+          onOpenInDecoder={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password)}
+        />
       )}
     </div>
   );

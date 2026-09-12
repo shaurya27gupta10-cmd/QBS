@@ -3,14 +3,15 @@ import {
   FolderLock, Upload, Image, Video, Music, FileText, 
   File as FileIcon, Eye, EyeOff, Play, Pause, Download, Share2, 
   RotateCcw, QrCode, AlertCircle, CheckCircle2, 
-  FlaskConical, Check, X, ShieldCheck, AlertTriangle 
+  FlaskConical, Check, X, ShieldCheck, AlertTriangle, Copy, ExternalLink 
 } from 'lucide-react';
 import { FileCategory, GeneratedSound, QrCodeData } from '../types';
-import { encryptFile, inspectPayloadInfo, decryptFilePayload } from '../lib/crypto';
+import { encryptFile, inspectPayloadInfo, decryptFilePayload, bytesToBase64 } from '../lib/crypto';
 import { synthesizeFskPcm, buildWavFile, generateFilename, extractPayloadFromWav } from '../lib/audioCodec';
 import { generateEncryptedQrCode } from '../lib/qr';
 import { AudioVisualizer } from './AudioVisualizer';
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
+import { ShareModal } from './ShareModal';
 
 interface FileEncodeTabProps {
   onTestDecode: (blob: Blob, filename: string, payload: Uint8Array, password?: string) => void;
@@ -50,8 +51,10 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
   const [soundDuration, setSoundDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // QR Code State
+  // QR Code & Share State
   const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [copiedQrCode, setCopiedQrCode] = useState(false);
   const [qrCodeData, setQrCodeData] = useState<QrCodeData | null>(null);
 
   // In-browser byte-for-byte verification test
@@ -327,6 +330,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
         fitsQr: qrRes.fitsQr,
         payloadSize: payload.length,
         warning: qrRes.warning,
+        qrPayloadString: qrRes.qrPayloadString,
       });
 
       const soundResult: GeneratedSound = {
@@ -916,8 +920,9 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
             </button>
 
             <button
-              onClick={handleShare}
+              onClick={() => setShareModalOpen(true)}
               className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs sm:text-sm transition-colors min-h-[44px]"
+              title="Share QR code, audio sound, or encrypted payload"
             >
               <Share2 className="w-4 h-4" />
               <span>Share</span>
@@ -980,13 +985,16 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
       )}
 
       {/* QR Code Modal */}
-      {qrModalOpen && (
+      {qrModalOpen && generatedSound && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-6 space-y-4 border border-slate-200 shadow-xl">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 sm:p-6 space-y-4 border border-slate-200 shadow-xl">
             <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                Encrypted QR Code
-              </h3>
+              <div className="flex items-center gap-2">
+                <QrCode className="w-5 h-5 text-blue-600" />
+                <h3 className="text-base font-bold text-slate-900">
+                  Encrypted QR Code
+                </h3>
+              </div>
               <button
                 onClick={() => setQrModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
@@ -1001,26 +1009,110 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
                   <img
                     src={qrCodeData.dataUrl}
                     alt="Encrypted QR Code"
-                    className="w-60 h-60 mx-auto"
+                    className="w-56 h-56 mx-auto object-contain"
                   />
                 </div>
                 <p className="text-xs text-slate-500">
-                  Self-contained encrypted payload ({formatBytes(qrCodeData.payloadSize)}). Contains no password.
+                  Self-contained encrypted payload ({formatBytes(qrCodeData.payloadSize)}). Zero password leakage.
                 </p>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const a = document.createElement('a');
+                      a.href = qrCodeData.dataUrl;
+                      a.download = `QBS-QR-${file?.name || 'file'}.png`;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-2xs transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Save .PNG</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const codeStr = qrCodeData.qrPayloadString || `QBSS:${bytesToBase64(generatedSound.rawPayload)}`;
+                      navigator.clipboard.writeText(codeStr);
+                      setCopiedQrCode(true);
+                      setTimeout(() => setCopiedQrCode(false), 2500);
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors"
+                  >
+                    {copiedQrCode ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="text-emerald-700 font-bold">Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy Code</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             ) : (
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-center space-y-2 text-xs text-amber-900">
-                <AlertTriangle className="w-6 h-6 text-amber-600 mx-auto" />
-                <p className="font-bold text-sm">
-                  QR Code is not suitable for this file size.
-                </p>
-                <p className="text-amber-800 leading-relaxed">
-                  Use the QBS Secure Sound file (.wav) to transmit and decode this file reliably.
-                </p>
+              <div className="space-y-3">
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2 text-xs text-amber-900">
+                  <div className="flex items-center gap-2 font-bold text-sm text-amber-800">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                    <span>Payload exceeds optical QR capacity</span>
+                  </div>
+                  <p className="text-amber-800 leading-relaxed">
+                    Standard QR camera scanners are limited to ~2 KB. This file's encrypted payload is <span className="font-semibold">{formatBytes(generatedSound.payloadSizeBytes)}</span>.
+                  </p>
+                  <p className="text-amber-700 text-[11px]">
+                    You can still copy the encrypted code string to paste in the decoder, or use the audio sound carrier!
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const codeStr = `QBSS:${bytesToBase64(generatedSound.rawPayload)}`;
+                      navigator.clipboard.writeText(codeStr);
+                      setCopiedQrCode(true);
+                      setTimeout(() => setCopiedQrCode(false), 2500);
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-semibold transition-colors"
+                  >
+                    {copiedQrCode ? (
+                      <>
+                        <Check className="w-4 h-4 text-emerald-600" />
+                        <span className="text-emerald-700 font-bold">Copied Encrypted Code String!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4" />
+                        <span>Copy Encrypted Code String</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQrModalOpen(false);
+                      setShareModalOpen(true);
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold transition-colors"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span>Open Full Share & Export Options</span>
+                  </button>
+                </div>
               </div>
             )}
 
             <button
+              type="button"
               onClick={() => setQrModalOpen(false)}
               className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs transition-colors"
             >
@@ -1028,6 +1120,22 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Full Share & Export Modal */}
+      {generatedSound && (
+        <ShareModal
+          isOpen={shareModalOpen}
+          onClose={() => setShareModalOpen(false)}
+          title={`Share Encrypted File (${file?.name})`}
+          filename={generatedSound.filename}
+          soundBlob={generatedSound.blob}
+          rawPayload={generatedSound.rawPayload}
+          qrDataUrl={qrCodeData?.dataUrl}
+          fitsQr={qrCodeData?.fitsQr}
+          qrPayloadString={qrCodeData?.qrPayloadString || `QBSS:${bytesToBase64(generatedSound.rawPayload)}`}
+          onOpenInDecoder={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password)}
+        />
       )}
 
       {/* Security Statement */}
