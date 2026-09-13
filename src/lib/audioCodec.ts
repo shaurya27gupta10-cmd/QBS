@@ -4,6 +4,8 @@
  * the encrypted binary payload into reliable WAV format.
  */
 
+import { base64ToBytes } from './crypto';
+
 const SAMPLE_RATE = 44100;
 const FREQ_SPACE = 1200; // Bit 0 frequency (Hz)
 const FREQ_MARK = 2000;  // Bit 1 frequency (Hz)
@@ -193,13 +195,42 @@ export function buildWavFile(pcmSamples: Int16Array, payload: Uint8Array): Blob 
 }
 
 /**
- * Extracts the encrypted binary payload from a WAV ArrayBuffer.
- * Parses the RIFF container format to locate the 'qbsd' chunk.
+ * Extracts the encrypted binary payload from a WAV ArrayBuffer or raw .qbs payload container.
+ * Parses the RIFF container format to locate the 'qbsd' chunk, or handles raw QBS payloads directly.
  */
 export function extractPayloadFromWav(arrayBuffer: ArrayBuffer): Uint8Array {
   const view = new DataView(arrayBuffer);
 
-  // Check RIFF header
+  // 1. Direct Binary Check: Is this a raw .qbs payload starting with magic header?
+  if (arrayBuffer.byteLength >= 4) {
+    const magicStr = String.fromCharCode(
+      view.getUint8(0),
+      view.getUint8(1),
+      view.getUint8(2),
+      view.getUint8(3)
+    );
+    if (magicStr === 'QBSS' || magicStr === 'QBS1' || magicStr === 'QBSF') {
+      return new Uint8Array(arrayBuffer);
+    }
+  }
+
+  // 2. Text / Base64 Check: Is this a text file containing an exported QBS string?
+  try {
+    const textSample = new TextDecoder().decode(
+      new Uint8Array(arrayBuffer.slice(0, Math.min(256, arrayBuffer.byteLength)))
+    );
+    if (/(?:QBSS|QBSF|QBS1|QBS2|QBS):/i.test(textSample.trim())) {
+      const fullText = new TextDecoder().decode(new Uint8Array(arrayBuffer));
+      const match = fullText.match(/(?:QBSS|QBSF|QBS1|QBS2|QBS):([A-Za-z0-9+/=_-]{12,})/i);
+      if (match) {
+        return base64ToBytes(match[1]);
+      }
+    }
+  } catch {
+    // Non-text binary, continue to RIFF WAVE parsing
+  }
+
+  // 3. RIFF WAVE Header Check
   if (arrayBuffer.byteLength < 44) {
     throw new Error('The audio does not contain a valid QBS secure payload.');
   }

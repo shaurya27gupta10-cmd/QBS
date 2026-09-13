@@ -1,5 +1,7 @@
 import { MessageSquare, Camera, FolderLock, Radio, ArrowRight, Sparkles, ShieldCheck, Cpu, KeyRound } from 'lucide-react';
 import { ActiveTab } from '../types';
+import { QbsLogo } from './QbsLogo';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface HomeViewProps {
   setActiveTab: (tab: ActiveTab) => void;
@@ -8,15 +10,20 @@ interface HomeViewProps {
 export function HomeView({ setActiveTab }: HomeViewProps) {
   return (
     <div className="py-8 sm:py-12">
-      {/* Hero Section */}
+      {/* Hero Section with Official QBS Brand Logo */}
       <div className="text-center max-w-3xl mx-auto px-4 sm:px-6">
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800 text-xs font-semibold mb-6">
+        {/* Official Brand Emblem and Title */}
+        <div className="flex justify-center mb-5">
+          <QbsLogo variant="full" size="lg" className="transform hover:scale-[1.02] transition-transform" />
+        </div>
+
+        <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800 text-xs font-semibold mb-6">
           <Sparkles className="w-3.5 h-3.5 text-blue-600" />
           <span>Client-Side Cryptographic Sound Generator</span>
         </div>
 
         <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-slate-900 tracking-tight leading-tight sm:leading-tight">
-          Secure Messages & Files
+          Secure Messages &amp; Files
         </h1>
         <p className="mt-2 text-lg sm:text-xl font-medium text-blue-600">
           Your Message. Your File. Your Password. Your Sound.
@@ -26,7 +33,7 @@ export function HomeView({ setActiveTab }: HomeViewProps) {
           Encrypt messages, photos, videos, audio and files with a password and transform the encrypted data into a QBS Secure Sound.
         </p>
 
-        {/* Primary CTA Buttons */}
+        {/* Primary CTA Buttons + Add Shortcut */}
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
           <button
             id="home-encode-btn"
@@ -46,6 +53,8 @@ export function HomeView({ setActiveTab }: HomeViewProps) {
             <KeyRound className="w-5 h-5 text-blue-600" />
             <span>Decode Sound</span>
           </button>
+
+          <PWAInstallButton variant="hero" className="w-full sm:w-auto min-h-[48px]" />
         </div>
 
         {/* Local Security Badge */}

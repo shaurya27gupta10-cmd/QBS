@@ -996,6 +996,10 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
           qrCodeData={qrCodeData}
           rawPayload={generatedSound.rawPayload}
           filename={file?.name || 'file'}
+          onOpenInDecoder={() => {
+            setQrModalOpen(false);
+            onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password);
+          }}
         />
       )}
 
@@ -1010,7 +1014,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
           rawPayload={generatedSound.rawPayload}
           qrDataUrl={qrCodeData?.dataUrl}
           fitsQr={qrCodeData?.fitsQr}
-          qrPayloadString={qrCodeData?.qrPayloadString || `QBSS:${bytesToBase64(generatedSound.rawPayload)}`}
+          qrPayloadString={qrCodeData?.qrPayloadString || `QBSF:${bytesToBase64(generatedSound.rawPayload)}`}
           isMultiPart={qrCodeData?.isMultiPart}
           frameCount={qrCodeData?.frameCount}
           onOpenInDecoder={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password)}

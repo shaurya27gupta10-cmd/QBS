@@ -155,13 +155,13 @@ export async function getPayloadFromStore(id: string): Promise<Uint8Array | null
  * Check if a raw string is a reference code (e.g. QBSF:REF:a1b2c3d4 or QBSS:REF:a1b2c3d4).
  */
 export function isPayloadReferenceCode(input: string): boolean {
-  return /^(?:QBSF|QBSS|QBS):REF:([a-f0-9_-]+)/i.test(input.trim());
+  return /(?:QBSF|QBSS|QBS):REF:([a-f0-9_-]+)/i.test(input.trim());
 }
 
 /**
  * Extract the reference ID from a reference code string.
  */
 export function extractPayloadReferenceId(input: string): string | null {
-  const match = input.trim().match(/^(?:QBSF|QBSS|QBS):REF:([a-f0-9_-]+)/i);
+  const match = input.trim().match(/(?:QBSF|QBSS|QBS):REF:([a-f0-9_-]+)/i);
   return match ? match[1].toLowerCase() : null;
 }

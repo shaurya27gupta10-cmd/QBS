@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "QBS Secure Sound",
+  "short_name": "QBS Secure",
+  "description": "Your Message. Your File. Your Password. Your Sound. Client-side AES-GCM encryption for messages and files with digital audio carrier encoding.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

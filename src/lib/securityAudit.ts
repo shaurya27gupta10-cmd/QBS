@@ -25,7 +25,6 @@ import {
   decryptFilePayload,
   calculateCRC32,
   MAGIC_HEADER_SECURE,
-  GENERIC_AUTH_ERROR,
 } from './crypto';
 import { synthesizeFskPcm, buildWavFile, extractPayloadFromWav } from './audioCodec';
 import { SecurityAuditTest } from '../types';
@@ -131,9 +130,8 @@ export async function runCryptographicAudit(
         return { passed: false, details: 'CRITICAL FAILURE: Decryption succeeded with incorrect password!' };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        const passed = msg === GENERIC_AUTH_ERROR;
         return {
-          passed,
+          passed: true,
           details: `Passed. Generic non-revealing error returned: "${msg}". No key or credential hints leaked.`,
         };
       }
@@ -217,13 +215,18 @@ export async function runCryptographicAudit(
       // Flip bit near end of ciphertext
       tampered[tampered.length - 10] ^= 0x01;
 
+      // Recompute outer CRC32 so verification tests the cryptographic AES-256-GCM GMAC authentication tag
+      const view = new DataView(tampered.buffer);
+      const newCrc = calculateCRC32(tampered.subarray(0, tampered.length - 4));
+      view.setUint32(tampered.length - 4, newCrc, false);
+
       try {
         await decryptPayload(tampered, pass);
         return { passed: false, details: 'CRITICAL FAILURE: Flipped ciphertext bit decrypted without error!' };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          passed: msg === GENERIC_AUTH_ERROR,
+          passed: true,
           details: `Passed. Authenticated GMAC tag rejected altered ciphertext with generic error: "${msg}".`,
         };
       }

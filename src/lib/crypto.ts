@@ -992,20 +992,29 @@ async function decryptLegacyV1File(
  * Base64 helper methods
  */
 export function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  const CHUNK_SIZE = 0x8000; // 32768 bytes chunking to prevent V8 string alloc bottlenecks
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    chunks.push(
+      String.fromCharCode.apply(
+        null,
+        bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length)) as unknown as number[]
+      )
+    );
   }
-  return btoa(binary);
+  return btoa(chunks.join(''));
 }
 
 export function base64ToBytes(base64: string): Uint8Array {
-  const binaryString = atob(base64.trim());
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+  try {
+    const binaryString = atob(base64.trim());
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+  } catch {
+    throw new Error('Invalid base64 character found in payload. The code was corrupted or modified.');
   }
-  return bytes;
 }

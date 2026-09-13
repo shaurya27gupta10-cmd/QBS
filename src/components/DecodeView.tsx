@@ -143,10 +143,28 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
       }
     }
 
-    // 2. Check if it's a portable .qbs encrypted container file
-    if (name && name.toLowerCase().endsWith('.qbs')) {
+    // 2. Read first bytes to inspect magic header
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch {
+      setError('Failed to read selected file.');
+      return;
+    }
+
+    const byteLength = buffer.byteLength;
+    const headerBytes = new Uint8Array(buffer, 0, Math.min(16, byteLength));
+    const header4Str = String.fromCharCode(...headerBytes.slice(0, 4));
+
+    // 2a. Check if it's a raw .qbs payload container or has QBS magic bytes
+    const isQbsMagic =
+      header4Str === 'QBSS' ||
+      header4Str === 'QBS1' ||
+      header4Str === 'QBSF' ||
+      (name && name.toLowerCase().endsWith('.qbs'));
+
+    if (isQbsMagic) {
       try {
-        const buffer = await file.arrayBuffer();
         const raw = new Uint8Array(buffer);
         setSourceMode('qr');
         setQrText(`QBSS:${bytesToBase64(raw)}`);
@@ -155,14 +173,42 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
         setTimeout(() => setQrStatusSuccess(null), 3500);
         return;
       } catch {
-        setError('Failed to read .qbs container file.');
+        setError('Failed to process .qbs container payload.');
         return;
       }
     }
 
-    // 3. Audio WAV format check
-    if (name && !name.toLowerCase().endsWith('.wav') && file.type && !file.type.includes('audio') && !file.type.includes('wav')) {
-      setError('This format is not supported. Please use a QBS WAV audio file, or upload a QR image.');
+    // 2b. Check if user dropped a text file containing an exported QBS string or JSON chunk
+    const isTextFile = (name && name.match(/\.(txt|json|log)$/i)) || (file.type && file.type.startsWith('text/'));
+    if (isTextFile) {
+      try {
+        const textContent = new TextDecoder().decode(headerBytes);
+        if (
+          textContent.startsWith('QBSS') ||
+          textContent.startsWith('QBS1') ||
+          textContent.startsWith('QBSF') ||
+          textContent.startsWith('{"') ||
+          textContent.startsWith('data:image')
+        ) {
+          const fullText = await file.text();
+          setSourceMode('qr');
+          setQrText(fullText.trim());
+          setQrStatusSuccess('Text code imported successfully');
+          setTimeout(() => setQrStatusSuccess(null), 3500);
+          return;
+        }
+      } catch {
+        // Continue to audio check
+      }
+    }
+
+    // 3. Audio WAV format check (RIFF header check or audio MIME / extension)
+    const isRiffHeader = header4Str === 'RIFF';
+    const isWavExt = name && (name.toLowerCase().endsWith('.wav') || name.toLowerCase().endsWith('.wave'));
+    const isAudioMime = file.type && (file.type.includes('audio') || file.type.includes('wav'));
+
+    if (!isRiffHeader && !isWavExt && !isAudioMime) {
+      setError('This format is not supported. Please use a QBS WAV audio file, a QR screenshot, or an exported code file.');
       return;
     }
 
@@ -182,7 +228,6 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
 
     // Pre-parse the WAV container to detect payload type before password entry
     try {
-      const buffer = await file.arrayBuffer();
       const payload = extractPayloadFromWav(buffer);
       analyzePayloadBytes(payload);
     } catch {
@@ -291,6 +336,15 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
         setSourceMode('audio');
       }
       handleFileProcess(droppedFile, droppedFile.name);
+    } else {
+      // Check if dropped item was text (e.g. copied encrypted code)
+      const text = e.dataTransfer.getData('text');
+      if (text && text.trim()) {
+        setSourceMode('qr');
+        handleQrTextChange(text.trim());
+        setQrStatusSuccess('Encrypted code dropped!');
+        setTimeout(() => setQrStatusSuccess(null), 3000);
+      }
     }
   };
 
@@ -324,18 +378,30 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     if (decryptedFile?.objectUrl) URL.revokeObjectURL(decryptedFile.objectUrl);
     setDecryptedFile(null);
 
-    if (sourceMode === 'audio' && !fileBlob) {
-      setError('Please select or upload a QBS Secure Sound audio file first.');
-      return;
+    let currentSourceMode = sourceMode;
+
+    if (currentSourceMode === 'audio' && !fileBlob) {
+      if (qrText.trim() || extractedRawPayload) {
+        currentSourceMode = 'qr';
+        setSourceMode('qr');
+      } else {
+        setError('Please select or upload a QBS Secure Sound audio file first, or switch to Encrypted Code / QR tab.');
+        return;
+      }
     }
 
-    if (sourceMode === 'qr' && !qrText.trim()) {
-      setError('Please paste an encrypted QBS QR payload string first.');
-      return;
+    if (currentSourceMode === 'qr' && !qrText.trim() && !extractedRawPayload) {
+      if (fileBlob) {
+        currentSourceMode = 'audio';
+        setSourceMode('audio');
+      } else {
+        setError('Please paste an encrypted QBS payload string (e.g. QBSF:... or QBSS:...) first.');
+        return;
+      }
     }
 
     if (!password) {
-      setError('Please enter a password.');
+      setError('Please enter the password for this encrypted container.');
       return;
     }
 
@@ -344,9 +410,9 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     try {
       let payload: Uint8Array;
 
-      if (sourceMode === 'audio') {
+      if (currentSourceMode === 'audio') {
         // Step 1: Analyze audio
-        setLoadingStep('Analyzing sound...');
+        setLoadingStep('Analyzing sound container...');
         await new Promise((r) => setTimeout(r, 160));
 
         const arrayBuffer = await fileBlob!.arrayBuffer();
@@ -357,13 +423,20 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
 
         payload = extractPayloadFromWav(arrayBuffer);
       } else {
-        setLoadingStep('Parsing encrypted QR payload...');
+        setLoadingStep('Parsing encrypted payload...');
         await new Promise((r) => setTimeout(r, 140));
 
         try {
-          payload = await resolveQrPayload(qrText);
-        } catch {
-          throw new Error('This does not appear to be a valid QBS Secure Sound payload. Please ensure you have scanned the QR code or copied the complete code (e.g. QBSS:... or QBSF:...).');
+          if (extractedRawPayload && qrText.trim().length > 6) {
+            payload = extractedRawPayload;
+          } else {
+            payload = await resolveQrPayload(qrText);
+          }
+        } catch (resolveErr: any) {
+          throw new Error(
+            resolveErr?.message ||
+              'This does not appear to be a valid QBS Secure Sound payload. Please ensure you have copied the complete code (e.g. QBSF:... or QBSS:...).'
+          );
         }
       }
 
@@ -604,9 +677,15 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                         handleQrTextChange(text);
                         setQrStatusSuccess('Pasted from clipboard!');
                         setTimeout(() => setQrStatusSuccess(null), 2500);
+                      } else {
+                        setError('Clipboard is empty.');
                       }
                     } catch {
-                      // Clipboard read permission might be blocked in some browsers
+                      // Clipboard read permission might be blocked in some browsers/iframes
+                      const textarea = document.getElementById('decode-qr-input') as HTMLTextAreaElement | null;
+                      textarea?.focus();
+                      setQrStatusSuccess('Clipboard auto-read restricted. Please tap inside the box below to Paste.');
+                      setTimeout(() => setQrStatusSuccess(null), 4000);
                     }
                   }}
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors"

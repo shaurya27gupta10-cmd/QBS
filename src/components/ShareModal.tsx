@@ -12,7 +12,8 @@ import {
   ShieldCheck,
   AlertCircle
 } from 'lucide-react';
-import { bytesToBase64 } from '../lib/crypto';
+import { bytesToBase64, inspectPayloadInfo } from '../lib/crypto';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -57,18 +58,35 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   const [shareStatus, setShareStatus] = useState<string | null>(null);
   const [shareError, setShareError] = useState<string | null>(null);
 
+  const [showCodePreview, setShowCodePreview] = useState(false);
+
   if (!isOpen) return null;
 
-  const payloadString = qrPayloadString || `QBSS:${bytesToBase64(rawPayload)}`;
+  let isFile = false;
+  try {
+    const info = inspectPayloadInfo(rawPayload);
+    isFile = info.type === 'file';
+  } catch {
+    isFile = filename.includes('.') && !filename.endsWith('.wav');
+  }
 
-  const handleCopyText = (text: string, type: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedType(type);
-    setShareStatus('Copied encrypted text to clipboard!');
-    setTimeout(() => {
-      setCopiedType(null);
-      setShareStatus(null);
-    }, 3000);
+  const defaultPrefix = isFile ? 'QBSF:' : 'QBSS:';
+  const payloadString = qrPayloadString || `${defaultPrefix}${bytesToBase64(rawPayload)}`;
+
+  const handleCopyText = async (text: string, type: string) => {
+    const res = await copyTextToClipboard(text);
+    if (res.success) {
+      setCopiedType(type);
+      setShareStatus('Copied encrypted code to clipboard! You can paste it directly into Decoder.');
+      setTimeout(() => {
+        setCopiedType(null);
+        setShareStatus(null);
+      }, 3500);
+    } else {
+      setShowCodePreview(true);
+      setShareStatus('Clipboard access blocked by browser. You can select and copy from the code box below.');
+      setTimeout(() => setShareStatus(null), 5000);
+    }
   };
 
   // Share QR Code Image via Web Share API
@@ -385,6 +403,43 @@ export const ShareModal: React.FC<ShareModalProps> = ({
               <span>Save .QBS File</span>
             </button>
           </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <button
+              type="button"
+              onClick={() => setShowCodePreview(!showCodePreview)}
+              className="text-[11px] text-blue-600 hover:text-blue-800 font-medium hover:underline"
+            >
+              {showCodePreview ? 'Hide Raw Code' : 'View / Select Raw Code'}
+            </button>
+            {onOpenInDecoder && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenInDecoder();
+                }}
+                className="text-[11px] text-emerald-700 hover:text-emerald-800 font-semibold hover:underline"
+              >
+                Test in Decoder &rarr;
+              </button>
+            )}
+          </div>
+
+          {showCodePreview && (
+            <div className="space-y-1.5 pt-1 animate-fade-in">
+              <textarea
+                readOnly
+                rows={3}
+                value={payloadString}
+                onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                className="w-full p-2 text-[10px] font-mono bg-white border border-slate-300 rounded-lg text-slate-800 select-all focus:ring-1 focus:ring-blue-500"
+              />
+              <p className="text-[10px] text-slate-500">
+                Click inside box to select all text, then copy manually (Ctrl+C / tap-and-hold).
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Footer Actions */}

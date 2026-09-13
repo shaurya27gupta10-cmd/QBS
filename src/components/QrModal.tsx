@@ -6,9 +6,12 @@ import {
   Copy,
   Check,
   Sparkles,
+  KeyRound,
+  FileCode,
 } from 'lucide-react';
 import type { QrCodeData } from '../types';
 import { bytesToBase64 } from '../lib/crypto';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 interface QrModalProps {
   isOpen: boolean;
@@ -16,6 +19,7 @@ interface QrModalProps {
   qrCodeData: QrCodeData | null;
   rawPayload: Uint8Array;
   filename?: string;
+  onOpenInDecoder?: () => void;
 }
 
 export function QrModal({
@@ -24,14 +28,17 @@ export function QrModal({
   qrCodeData,
   rawPayload,
   filename = 'file',
+  onOpenInDecoder,
 }: QrModalProps) {
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedFullCode, setCopiedFullCode] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   if (!isOpen || !qrCodeData) return null;
 
   const qrPayloadString = qrCodeData.qrPayloadString || '';
-  const isFile = qrPayloadString.startsWith('QBSF:');
+  const opticalCode = qrCodeData.frames[0]?.payloadString || qrPayloadString;
+  const isFile = qrPayloadString.startsWith('QBSF:') || opticalCode.startsWith('QBSF:');
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
@@ -41,16 +48,44 @@ export function QrModal({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // Copy full encrypted string (QBSF:... or QBSS:...)
-  const handleCopyCode = () => {
-    const code = qrPayloadString || (isFile ? `QBSF:${bytesToBase64(rawPayload)}` : `QBSS:${bytesToBase64(rawPayload)}`);
-    navigator.clipboard.writeText(code);
-    setCopiedCode(true);
-    setStatusMessage(isFile ? 'Copied QBSF encrypted code to clipboard!' : 'Copied QBS encrypted code to clipboard!');
+  // Full standalone Base64 string
+  const fullBase64Code =
+    qrPayloadString ||
+    (isFile ? `QBSF:${bytesToBase64(rawPayload)}` : `QBSS:${bytesToBase64(rawPayload)}`);
+
+  // Primary Copy: Copies the exact decodable QR code text (opticalCode, which is reference or base64)
+  const handleCopyCode = async () => {
+    const codeToCopy = opticalCode || fullBase64Code;
+    const res = await copyTextToClipboard(codeToCopy);
+    if (res.success) {
+      setCopiedCode(true);
+      setStatusMessage(
+        isFile
+          ? 'Copied QBSF encrypted code to clipboard! You can paste it directly into the Decoder.'
+          : 'Copied QBS encrypted code to clipboard! You can paste it directly into the Decoder.'
+      );
+    } else {
+      setStatusMessage('Clipboard access restricted. Please use the "Test in Decoder" button below.');
+    }
     setTimeout(() => {
       setCopiedCode(false);
       setStatusMessage(null);
-    }, 3000);
+    }, 4000);
+  };
+
+  // Secondary Copy: Copies full standalone base64 payload
+  const handleCopyFullBase64 = async () => {
+    const res = await copyTextToClipboard(fullBase64Code);
+    if (res.success) {
+      setCopiedFullCode(true);
+      setStatusMessage('Copied full standalone encrypted base64 payload!');
+    } else {
+      setStatusMessage('Clipboard restricted. Please use the "Test in Decoder" button below.');
+    }
+    setTimeout(() => {
+      setCopiedFullCode(false);
+      setStatusMessage(null);
+    }, 4000);
   };
 
   // Download single QR PNG
@@ -145,7 +180,7 @@ export function QrModal({
             </div>
           </div>
 
-          {/* Action Buttons Grid: Download QR (.PNG) and Copy Code ONLY */}
+          {/* Action Buttons Grid: Download QR (.PNG) and Copy Code */}
           <div className="grid grid-cols-2 gap-2.5 pt-1">
             {/* Download QR PNG */}
             <button
@@ -161,7 +196,8 @@ export function QrModal({
             <button
               type="button"
               onClick={handleCopyCode}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors border border-slate-300"
+              title="Copies the exact code that decodes instantly"
             >
               {copiedCode ? (
                 <>
@@ -175,6 +211,35 @@ export function QrModal({
                 </>
               )}
             </button>
+          </div>
+
+          {/* Additional Options: Full Base64 text and Test in Decoder */}
+          <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+            {opticalCode !== fullBase64Code && (
+              <button
+                type="button"
+                onClick={handleCopyFullBase64}
+                className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-600 text-[11px] font-medium border border-slate-200 transition-colors"
+                title="Copy the entire raw base64 string for cross-device text transfer"
+              >
+                <FileCode className="w-3 h-3" />
+                <span>{copiedFullCode ? 'Base64 Copied!' : 'Copy Full Base64'}</span>
+              </button>
+            )}
+
+            {onOpenInDecoder && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenInDecoder();
+                }}
+                className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[11px] font-semibold border border-emerald-200 transition-colors"
+              >
+                <KeyRound className="w-3 h-3 text-emerald-600" />
+                <span>Test in Decoder</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

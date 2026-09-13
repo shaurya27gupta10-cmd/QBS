@@ -34,6 +34,18 @@ export default function App() {
       setShowTermsModal(true);
       setIsMandatoryTerms(true);
     }
+
+    // Prevent browser from navigating away if a file is dropped outside active drop zones
+    const preventFileDropNavigation = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', preventFileDropNavigation, false);
+    window.addEventListener('drop', preventFileDropNavigation, false);
+
+    return () => {
+      window.removeEventListener('dragover', preventFileDropNavigation, false);
+      window.removeEventListener('drop', preventFileDropNavigation, false);
+    };
   }, []);
 
   const handleOpenTermsFromFooter = () => {

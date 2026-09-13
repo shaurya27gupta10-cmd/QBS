@@ -258,21 +258,28 @@ export function parseAndNormalizeQrPayload(input: string): Uint8Array {
     }
   }
 
-  // Strip wrapping quotes or brackets if pasted from JSON or logs
+  // Strip wrapping markdown code blocks (e.g. ``` ... ```) or quotes
+  str = str.replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/i, '');
   if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith("'") && str.endsWith("'"))) {
     str = str.slice(1, -1).trim();
   }
 
   // If single multi-part chunk was pasted: QBSP:1/1:...
-  const multiMatch = str.match(/^QBSP:\d+\/\d+:(.*)$/i);
+  const multiMatch = str.match(/QBSP:\d+\/\d+:([A-Za-z0-9+/=_-]+)/i);
   if (multiMatch) {
     str = multiMatch[1];
   }
 
-  // Strip known prefixes (case-insensitive)
-  str = str.replace(/^(QBSS|QBSF|QBS1|QBS2|QBS):/i, '');
+  // Check if string contains an embedded QBS code with prefix (e.g. pasted from a chat or notes)
+  const embeddedMatch = str.match(/(?:QBSS|QBSF|QBS1|QBS2|QBS):([A-Za-z0-9+/=_-]{12,})/i);
+  if (embeddedMatch) {
+    str = embeddedMatch[1];
+  } else {
+    // Strip known prefixes if at the beginning
+    str = str.replace(/^(?:QBSS|QBSF|QBS1|QBS2|QBS):/i, '');
+  }
 
-  // Strip all internal whitespace, linebreaks, tabs
+  // Strip all internal whitespace, linebreaks, tabs, or non-base64 characters
   str = str.replace(/[\s\r\n\t]+/g, '');
 
   // Convert URL-safe base64 (- to +, _ to /)
@@ -284,7 +291,7 @@ export function parseAndNormalizeQrPayload(input: string): Uint8Array {
   }
 
   if (str.length < 16) {
-    throw new Error('QR payload is too short to be a valid QBS encrypted container.');
+    throw new Error('The pasted code is too short to be a valid QBS encrypted payload.');
   }
 
   return base64ToBytes(str);

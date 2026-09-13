@@ -1,5 +1,6 @@
 import { Shield, Lock, KeyRound, Radio, HelpCircle } from 'lucide-react';
 import { ActiveTab } from '../types';
+import { QbsLogo } from './QbsLogo';
 
 interface FooterProps {
   setActiveTab: (tab: ActiveTab) => void;
@@ -14,9 +15,7 @@ export function Footer({ setActiveTab, onOpenTerms }: FooterProps) {
           {/* Brand Info */}
           <div className="text-center md:text-left space-y-1">
             <div className="flex items-center justify-center md:justify-start gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold text-xs">
-                QBS
-              </div>
+              <QbsLogo variant="shield" size="sm" />
               <span className="font-bold text-slate-900 text-sm tracking-tight">QBS Secure Sound</span>
               <span className="text-xs text-slate-400">&bull;</span>
               <span className="text-xs text-slate-500 font-medium">v1.0.0</span>

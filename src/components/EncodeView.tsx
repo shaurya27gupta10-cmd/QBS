@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ChangeEvent } from 'react';
+import { useState, useRef, useEffect, type ChangeEvent, type DragEvent } from 'react';
 import { 
   Lock, Eye, EyeOff, Play, Pause, Download, Share2, 
   RotateCcw, QrCode, Check, AlertCircle, Sparkles, 
@@ -36,6 +36,65 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [copiedQr, setCopiedQr] = useState(false);
   const [shareSuccess, setShareSuccess] = useState<string | null>(null);
+
+  // Drag & drop state for message mode
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const droppedFile = e.dataTransfer.files[0];
+      const isText = droppedFile.type.startsWith('text/') || 
+                     droppedFile.name.endsWith('.txt') || 
+                     droppedFile.name.endsWith('.md') || 
+                     droppedFile.name.endsWith('.json') ||
+                     droppedFile.name.endsWith('.log') ||
+                     droppedFile.name.endsWith('.csv');
+      if (isText) {
+        try {
+          const text = await droppedFile.text();
+          setMessage(text);
+          setError(null);
+        } catch {
+          setError('Could not read text file.');
+        }
+      } else {
+        // If user dropped media or binary file into message area, switch to File mode
+        setEncodeMode('file');
+      }
+    }
+  };
 
   // Audio playback state
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -280,7 +339,26 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
         <FileEncodeTab onTestDecode={onTestDecode} />
       ) : (
         /* Main Message Card */
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 sm:p-8">
+        <div
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`bg-white rounded-2xl border shadow-sm p-5 sm:p-8 relative transition-all ${
+            isDragOver ? 'border-blue-500 ring-4 ring-blue-100 bg-blue-50/20' : 'border-slate-200'
+          }`}
+        >
+          {isDragOver && (
+            <div className="absolute inset-0 bg-blue-50/95 border-2 border-blue-500 border-dashed rounded-2xl z-20 flex flex-col items-center justify-center p-6 text-center pointer-events-none">
+              <div className="w-12 h-12 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center mb-3">
+                <Sparkles className="w-6 h-6 animate-pulse" />
+              </div>
+              <p className="text-base font-bold text-blue-900">Drop file to load content</p>
+              <p className="text-xs text-blue-600 mt-1 max-w-xs">
+                Text files will be loaded into the message field. Media &amp; binaries will open the File Encryptor.
+              </p>
+            </div>
+          )}
         {!generatedSound ? (
           /* Input Form */
           <div className="space-y-6">
@@ -610,6 +688,10 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
           }}
           rawPayload={generatedSound.rawPayload}
           filename={generatedSound.filename}
+          onOpenInDecoder={() => {
+            setShowQrModal(false);
+            onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password);
+          }}
         />
       )}
 
