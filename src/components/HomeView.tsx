@@ -1,6 +1,5 @@
 import { MessageSquare, Camera, FolderLock, Radio, ArrowRight, Sparkles, ShieldCheck, Cpu, KeyRound } from 'lucide-react';
 import { ActiveTab } from '../types';
-import { PWAInstallButton } from './PWAInstallButton';
 
 interface HomeViewProps {
   setActiveTab: (tab: ActiveTab) => void;
@@ -47,8 +46,6 @@ export function HomeView({ setActiveTab }: HomeViewProps) {
             <KeyRound className="w-5 h-5 text-blue-600" />
             <span>Decode Sound</span>
           </button>
-
-          <PWAInstallButton variant="hero" className="w-full sm:w-auto min-h-[48px]" />
         </div>
 
         {/* Local Security Badge */}
