@@ -1,6 +1,5 @@
 import { MessageSquare, Camera, FolderLock, Radio, ArrowRight, Sparkles, ShieldCheck, Cpu, KeyRound } from 'lucide-react';
 import { ActiveTab } from '../types';
-import { QbsLogo } from './QbsLogo';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface HomeViewProps {
@@ -10,13 +9,8 @@ interface HomeViewProps {
 export function HomeView({ setActiveTab }: HomeViewProps) {
   return (
     <div className="py-8 sm:py-12">
-      {/* Hero Section with Official QBS Brand Logo */}
+      {/* Hero Section */}
       <div className="text-center max-w-3xl mx-auto px-4 sm:px-6">
-        {/* Official Brand Emblem and Title */}
-        <div className="flex justify-center mb-5">
-          <QbsLogo variant="full" size="lg" className="transform hover:scale-[1.02] transition-transform" />
-        </div>
-
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800 text-xs font-semibold mb-6">
           <Sparkles className="w-3.5 h-3.5 text-blue-600" />
           <span>Client-Side Cryptographic Sound Generator</span>

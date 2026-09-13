@@ -5,6 +5,8 @@ interface QbsLogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
   showText?: boolean;
+  animateWaves?: boolean;
+  useImage?: boolean;
 }
 
 export const QbsLogo: React.FC<QbsLogoProps> = ({
@@ -12,16 +14,18 @@ export const QbsLogo: React.FC<QbsLogoProps> = ({
   size = 'md',
   className = '',
   showText = true,
+  animateWaves = true,
+  useImage = false,
 }) => {
   // Dimension mappings
   const sizeConfig = {
-    sm: { height: 32, iconBox: 'w-8 h-8', textTitle: 'text-base', textSub: 'text-[9px]' },
-    md: { height: 44, iconBox: 'w-11 h-11', textTitle: 'text-lg', textSub: 'text-[11px]' },
-    lg: { height: 64, iconBox: 'w-16 h-16', textTitle: 'text-2xl', textSub: 'text-xs' },
-    xl: { height: 96, iconBox: 'w-24 h-24', textTitle: 'text-3xl', textSub: 'text-sm' },
+    sm: { height: 36, iconBox: 'w-9 h-9', textTitle: 'text-base', textSub: 'text-[9px]' },
+    md: { height: 48, iconBox: 'w-12 h-12', textTitle: 'text-lg', textSub: 'text-[11px]' },
+    lg: { height: 72, iconBox: 'w-20 h-20', textTitle: 'text-2xl', textSub: 'text-xs' },
+    xl: { height: 120, iconBox: 'w-32 h-32', textTitle: 'text-3xl', textSub: 'text-sm' },
   }[size];
 
-  // The Emblem SVG (Headphones + 3D Shield + Equalizer Soundwaves + Security Padlock)
+  // The Animated Emblem (Headphones + 3D Shield + Equalizer Soundwaves + Security Padlock)
   const renderEmblem = (includeHeadphones: boolean = true) => (
     <svg
       viewBox="0 0 500 500"
@@ -69,12 +73,6 @@ export const QbsLogo: React.FC<QbsLogoProps> = ({
         <linearGradient id="waveGrad" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#00f2fe" />
           <stop offset="100%" stopColor="#10b981" />
-        </linearGradient>
-
-        {/* Q Tail Cyan Accent Gradient */}
-        <linearGradient id="qTailGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#00f2fe" />
-          <stop offset="100%" stopColor="#00a8ff" />
         </linearGradient>
 
         {/* Glow Filter */}
@@ -167,19 +165,75 @@ export const QbsLogo: React.FC<QbsLogoProps> = ({
         <line x1="250" y1="102" x2="250" y2="380" stroke="#00e5ff" strokeWidth="2.5" opacity="0.75" />
       </g>
 
-      {/* 3. AUDIO EQUALIZER SOUNDWAVES (Cyan-Emerald Bars) */}
+      {/* 3. AUDIO EQUALIZER SOUNDWAVES (Cyan-Emerald Bars with Real Up & Down Bounce) */}
       <g id="soundwaves" fill="url(#waveGrad)">
         {/* Left Side Audio Waveform Bars */}
-        <rect x="160" y="228" width="7" height="42" rx="3.5" />
-        <rect x="174" y="208" width="7" height="82" rx="3.5" />
-        <rect x="188" y="192" width="7" height="114" rx="3.5" />
-        <rect x="202" y="214" width="7" height="70" rx="3.5" />
+        <rect
+          x="160"
+          y="228"
+          width="7"
+          height="42"
+          rx="3.5"
+          className={animateWaves ? 'wave-bar-1' : ''}
+        />
+        <rect
+          x="174"
+          y="208"
+          width="7"
+          height="82"
+          rx="3.5"
+          className={animateWaves ? 'wave-bar-3' : ''}
+        />
+        <rect
+          x="188"
+          y="192"
+          width="7"
+          height="114"
+          rx="3.5"
+          className={animateWaves ? 'wave-bar-4' : ''}
+        />
+        <rect
+          x="202"
+          y="214"
+          width="7"
+          height="70"
+          rx="3.5"
+          className={animateWaves ? 'wave-bar-2' : ''}
+        />
 
         {/* Right Side Audio Waveform Bars */}
-        <rect x="291" y="214" width="7" height="70" rx="3.5" />
-        <rect x="305" y="192" width="7" height="114" rx="3.5" />
-        <rect x="319" y="208" width="7" height="82" rx="3.5" />
-        <rect x="333" y="228" width="7" height="42" rx="3.5" />
+        <rect
+          x="291"
+          y="214"
+          width="7"
+          height="70"
+          rx="3.5"
+          className={animateWaves ? 'wave-bar-5' : ''}
+        />
+        <rect
+          x="305"
+          y="192"
+          width="7"
+          height="114"
+          rx="3.5"
+          className={animateWaves ? 'wave-bar-4' : ''}
+        />
+        <rect
+          x="319"
+          y="208"
+          width="7"
+          height="82"
+          rx="3.5"
+          className={animateWaves ? 'wave-bar-3' : ''}
+        />
+        <rect
+          x="333"
+          y="228"
+          width="7"
+          height="42"
+          rx="3.5"
+          className={animateWaves ? 'wave-bar-1' : ''}
+        />
       </g>
 
       {/* 4. SECURITY PADLOCK (White Solid with Keyhole) */}
@@ -223,37 +277,66 @@ export const QbsLogo: React.FC<QbsLogoProps> = ({
   if (variant === 'icon') {
     return (
       <div className={`relative flex items-center justify-center ${sizeConfig.iconBox} ${className}`}>
-        {renderEmblem(true)}
+        {useImage ? (
+          <img
+            src="/qbs-logo.png"
+            alt="QBS Secure Sound Icon"
+            className="w-full h-full object-contain select-none"
+          />
+        ) : (
+          renderEmblem(true)
+        )}
       </div>
     );
   }
 
-  // Variant: Full Vertical Brand Display (Emblem + QBS + SECURE • SOUND)
+  // Variant: Full Vertical Brand Display (Hero Section)
   if (variant === 'full') {
     return (
       <div className={`flex flex-col items-center justify-center select-none text-center ${className}`}>
-        <div className={sizeConfig.iconBox}>
-          {renderEmblem(true)}
+        {/* Emblem or Authentic Logo Image */}
+        <div className="relative flex items-center justify-center">
+          {useImage ? (
+            <div className="relative">
+              <img
+                src="/qbs-logo.png"
+                alt="QBS Secure Sound"
+                className="w-36 h-36 sm:w-44 sm:h-44 object-contain select-none filter drop-shadow-md"
+              />
+              {/* Overlay animated sound wave pulses over the image */}
+              {animateWaves && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="flex items-center gap-1 h-12 px-2">
+                    <div className="w-1 bg-cyan-400/90 rounded-full wave-bar-1 h-5" />
+                    <div className="w-1 bg-cyan-400/90 rounded-full wave-bar-3 h-8" />
+                    <div className="w-1 bg-cyan-400/90 rounded-full wave-bar-2 h-6" />
+                    <div className="w-1 bg-cyan-400/90 rounded-full wave-bar-4 h-9" />
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="w-28 h-28 sm:w-36 sm:h-36">
+              {renderEmblem(true)}
+            </div>
+          )}
         </div>
 
-        {showText && (
+        {/* Bold Stylized Typography */}
+        {showText && !useImage && (
           <div className="mt-3 flex flex-col items-center">
-            {/* Bold Stylized QBS with Cyan leg on Q */}
             <div className="flex items-center tracking-tight font-black font-sans leading-none text-[#07193b]">
               <span className="relative text-3xl sm:text-4xl font-extrabold tracking-tighter">
                 <span className="text-[#07193b]">Q</span>
-                {/* Cyan diagonal accent for Q */}
                 <span className="absolute -bottom-0.5 right-0.5 w-2 h-3.5 bg-gradient-to-tr from-[#00f2fe] to-[#0099ff] transform rotate-45 rounded-xs" />
               </span>
               <span className="text-3xl sm:text-4xl font-extrabold tracking-tighter ml-1">
                 BS
               </span>
             </div>
-
-            {/* Sub-label: SECURE • SOUND */}
-            <div className="mt-1 flex items-center gap-1.5 text-xs sm:text-sm font-bold tracking-widest text-[#07193b]">
+            <div className="mt-1.5 flex items-center gap-1.5 font-bold tracking-widest text-xs sm:text-sm text-[#07193b] uppercase">
               <span>SECURE</span>
-              <span className="w-1.5 h-1.5 rounded-full bg-[#00d4ff]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#00d4ff] animate-pulse" />
               <span className="text-[#0099ff]">SOUND</span>
             </div>
           </div>
@@ -262,29 +345,33 @@ export const QbsLogo: React.FC<QbsLogoProps> = ({
     );
   }
 
-  // Default Variant: Horizontal Brand (Header & Navbars)
+  // Default Variant: Horizontal Brand (Header & Mobile Navigation)
   return (
-    <div className={`flex items-center gap-3 select-none ${className}`}>
-      <div className={`${sizeConfig.iconBox} flex-shrink-0`}>
+    <div className={`flex items-center gap-2.5 sm:gap-3 select-none ${className}`}>
+      {/* Crisp Icon with Dancing Soundwaves */}
+      <div className={`${sizeConfig.iconBox} flex-shrink-0 relative`}>
         {renderEmblem(true)}
       </div>
 
       {showText && (
-        <div className="flex flex-col text-left">
-          <div className="flex items-center gap-1.5">
+        <div className="flex flex-col text-left justify-center min-w-0">
+          {/* Main Brand Line (Single Line, High-Impact) */}
+          <div className="flex items-center gap-1.5 whitespace-nowrap">
             <span className={`font-black tracking-tight text-slate-900 ${sizeConfig.textTitle} flex items-center`}>
-              <span className="relative">
+              <span className="relative text-[#07193b]">
                 Q
-                <span className="absolute bottom-0 right-0 w-1.5 h-2 bg-gradient-to-tr from-[#00d4ff] to-[#0088ff] rounded-xs" />
+                <span className="absolute bottom-0 right-0 w-1.5 h-1.5 bg-gradient-to-tr from-[#00d4ff] to-[#0088ff] rounded-xs" />
               </span>
-              <span className="ml-0.5">BS</span>
+              <span className="ml-0.5 text-[#07193b]">BS</span>
               <span className="ml-1.5 font-bold text-slate-800">Secure Sound</span>
             </span>
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+            <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
               v1.0
             </span>
           </div>
-          <div className={`flex items-center gap-1 font-bold tracking-wider text-slate-500 uppercase ${sizeConfig.textSub}`}>
+
+          {/* Subtitle - HIDDEN on small mobile to keep top bar 100% clean and uncluttered */}
+          <div className="hidden sm:flex items-center gap-1 font-bold tracking-wider text-slate-500 uppercase text-[10px]">
             <span className="text-slate-600">Secure</span>
             <span className="w-1 h-1 rounded-full bg-[#00b4d8]" />
             <span className="text-blue-600">Sound</span>
@@ -296,4 +383,5 @@ export const QbsLogo: React.FC<QbsLogoProps> = ({
     </div>
   );
 };
+
 export default QbsLogo;

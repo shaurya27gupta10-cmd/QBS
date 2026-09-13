@@ -13,9 +13,11 @@ import { HowItWorksView } from './components/HowItWorksView';
 import { SecurityView } from './components/SecurityView';
 import { Footer } from './components/Footer';
 import { TermsModal, TERMS_STORAGE_KEY } from './components/TermsModal';
+import { AppOpeningEffect } from './components/AppOpeningEffect';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('home');
+  const [showOpeningEffect, setShowOpeningEffect] = useState(true);
   const [testDecodeFile, setTestDecodeFile] = useState<{
     blob: Blob;
     filename: string;
@@ -86,6 +88,11 @@ export default function App() {
 
       {/* Footer */}
       <Footer setActiveTab={setActiveTab} onOpenTerms={handleOpenTermsFromFooter} />
+
+      {/* App Opening Effect with Animated Soundwave Logo */}
+      {showOpeningEffect && (
+        <AppOpeningEffect onComplete={() => setShowOpeningEffect(false)} />
+      )}
 
       {/* Mandatory / Informational Security, Privacy & Terms Modal */}
       <TermsModal

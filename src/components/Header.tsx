@@ -69,13 +69,12 @@ export function Header({ activeTab, setActiveTab }: HeaderProps) {
             <PWAInstallButton variant="header" />
           </div>
 
-          {/* Mobile Right Controls: Install + Menu Toggle */}
-          <div className="md:hidden flex items-center gap-2">
-            <PWAInstallButton variant="compact" />
+          {/* Mobile Right Controls: Hamburger Menu Only (Clean & Mobile-Friendly) */}
+          <div className="md:hidden flex items-center">
             <button
               id="mobile-menu-toggle-btn"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="p-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              className="p-2 rounded-lg text-slate-700 hover:text-slate-900 hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
               aria-label="Toggle navigation menu"
               aria-expanded={mobileMenuOpen}
             >
@@ -106,8 +105,11 @@ export function Header({ activeTab, setActiveTab }: HeaderProps) {
               </button>
             );
           })}
+          {/* Add Shortcut / Install Button inside Menu (Exact 2nd Image Style) */}
           <div className="pt-2">
-            <PWAInstallButton variant="hero" className="w-full justify-center" />
+            <PWAInstallButton
+              onClicked={() => setMobileMenuOpen(false)}
+            />
           </div>
         </div>
       )}
