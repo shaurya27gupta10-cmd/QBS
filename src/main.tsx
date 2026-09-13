@@ -9,7 +9,8 @@ if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'test') {
     navigator.serviceWorker
       .register('/sw.js')
       .then((reg) => {
-        console.log('QBS Service Worker registered:', reg.scope);
+        reg.update();
+        console.log('QBS Service Worker registered & updated:', reg.scope);
       })
       .catch((err) => {
         console.warn('QBS Service Worker registration failed:', err);
