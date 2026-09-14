@@ -30,12 +30,20 @@ export function QrModal({
   onOpenInDecoder,
 }: QrModalProps) {
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedFullRaw, setCopiedFullRaw] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   if (!isOpen || !qrCodeData) return null;
 
-  const qrPayloadString = qrCodeData.qrPayloadString || '';
-  const isFile = qrPayloadString.startsWith('QBSF:');
+  // The EXACT code encoded inside the QR code (e.g. QBSF:REF:4aaf77a5a75cadd7 or QBSS:...)
+  const qrCodeText =
+    qrCodeData.frames?.[0]?.payloadString ||
+    qrCodeData.qrPayloadString ||
+    '';
+
+  const isFile =
+    qrCodeText.startsWith('QBSF:') ||
+    (qrCodeData.qrPayloadString && qrCodeData.qrPayloadString.startsWith('QBSF:'));
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
@@ -45,28 +53,39 @@ export function QrModal({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // Full standalone Base64 string (always portable across any phone)
-  const fullBase64Code =
-    qrPayloadString ||
-    (isFile ? `QBSF:${bytesToBase64(rawPayload)}` : `QBSS:${bytesToBase64(rawPayload)}`);
+  // Full raw base64 string (available as secondary option)
+  const fullBase64Code = isFile
+    ? `QBSF:${bytesToBase64(rawPayload)}`
+    : `QBSS:${bytesToBase64(rawPayload)}`;
 
-  // Primary Copy: Copies the 100% full standalone code for instant cross-device transfer
+  // Primary Copy: Copies the exact code that is inside the QR code (short reference or direct data)
   const handleCopyCode = async () => {
-    const res = await copyTextToClipboard(fullBase64Code);
+    const codeToCopy = qrCodeText || fullBase64Code;
+    const res = await copyTextToClipboard(codeToCopy);
     if (res.success) {
       setCopiedCode(true);
-      setStatusMessage(
-        isFile
-          ? 'Copied QBSF encrypted code to clipboard! You can paste it directly into the Decoder on any phone.'
-          : 'Copied QBS encrypted code to clipboard! You can paste it directly into the Decoder on any phone.'
-      );
+      const preview = codeToCopy.length > 28 ? codeToCopy.slice(0, 25) + '...' : codeToCopy;
+      setStatusMessage(`Copied code (${preview}) to clipboard! Paste it directly into Decoder.`);
     } else {
-      setStatusMessage('Clipboard access restricted. Please use the "Test in Decoder" button below.');
+      setStatusMessage('Clipboard access restricted.');
     }
     setTimeout(() => {
       setCopiedCode(false);
       setStatusMessage(null);
     }, 4000);
+  };
+
+  // Secondary Copy: Full raw offline Base64 string
+  const handleCopyFullRaw = async () => {
+    const res = await copyTextToClipboard(fullBase64Code);
+    if (res.success) {
+      setCopiedFullRaw(true);
+      setStatusMessage('Copied complete raw base64 string to clipboard.');
+    }
+    setTimeout(() => {
+      setCopiedFullRaw(false);
+      setStatusMessage(null);
+    }, 3000);
   };
 
   // Download QR PNG
@@ -138,9 +157,32 @@ export function QrModal({
 
             <div className="mt-2.5 flex items-center justify-center gap-1.5 text-[11px] text-slate-600 font-medium">
               <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-              <span>Scan with second phone camera or the Decode tab</span>
+              <span>Scan with phone camera, Google Lens, or Decode tab</span>
             </div>
           </div>
+
+          {/* QR Code Content String Box with Quick Copy */}
+          {qrCodeText && (
+            <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2 text-left">
+              <div className="min-w-0 flex-1">
+                <span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                  QR Code Text ({qrCodeData.fitsQr ? 'Direct Data' : 'Short Reference'})
+                </span>
+                <span className="font-mono text-xs font-bold text-slate-900 truncate block select-all">
+                  {qrCodeText}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopyCode}
+                className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition-colors shadow-2xs"
+                title="Copy QR code text"
+              >
+                {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedCode ? 'Copied' : 'Copy'}</span>
+              </button>
+            </div>
+          )}
 
           {/* Payload Size & Safety Info */}
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-left space-y-1.5">
@@ -175,26 +217,39 @@ export function QrModal({
               <span>Download QR (.PNG)</span>
             </button>
 
-            {/* Copy Encrypted String */}
+            {/* Copy Short QR Code */}
             <button
               type="button"
               onClick={handleCopyCode}
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors border border-slate-300"
-              title="Copies the standalone code that decodes instantly on any device"
+              title="Copies the exact short code contained in the QR code"
             >
               {copiedCode ? (
                 <>
                   <Check className="w-3.5 h-3.5 text-emerald-600" />
-                  <span className="text-emerald-700 font-bold">Copied {isFile ? 'QBSF' : 'QBS'}!</span>
+                  <span className="text-emerald-700 font-bold">Copied Code!</span>
                 </>
               ) : (
                 <>
                   <Copy className="w-3.5 h-3.5" />
-                  <span>Copy {isFile ? 'QBSF' : 'QBS'} Code</span>
+                  <span>Copy Code</span>
                 </>
               )}
             </button>
           </div>
+
+          {/* Secondary Full Raw Copy (if large file) */}
+          {!qrCodeData.fitsQr && (
+            <div className="pt-1 text-center">
+              <button
+                type="button"
+                onClick={handleCopyFullRaw}
+                className="text-[11px] text-slate-500 hover:text-slate-700 underline transition-colors"
+              >
+                {copiedFullRaw ? 'Full Raw Base64 Copied!' : 'Copy Full Raw Base64 (Offline)'}
+              </button>
+            </div>
+          )}
 
           {/* Test in Decoder Option */}
           {onOpenInDecoder && (

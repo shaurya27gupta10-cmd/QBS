@@ -1,6 +1,9 @@
+import { bytesToBase64, base64ToBytes } from './crypto';
+
 /**
  * Persistent storage and reference resolver for QBS encrypted payloads.
- * Uses IndexedDB with in-memory caching and BroadcastChannel for cross-tab sync.
+ * Uses IndexedDB with in-memory caching, BroadcastChannel for cross-tab sync,
+ * and lightweight /api/payload sync for instant cross-device decoding (e.g. PC to phone).
  * Enables instant single QR code generation for payloads of ANY size.
  */
 
@@ -67,7 +70,7 @@ export async function createPayloadId(payload: Uint8Array): Promise<string> {
 }
 
 /**
- * Save an encrypted payload into IndexedDB and memory cache.
+ * Save an encrypted payload into IndexedDB, memory cache, and server relay.
  * Returns the short reference ID.
  */
 export async function savePayloadToStore(
@@ -106,6 +109,22 @@ export async function savePayloadToStore(
     console.warn('Failed to persist payload to IndexedDB:', err);
   }
 
+  // 4. Background server relay sync for instant cross-device resolution (phone to phone, PC to phone)
+  try {
+    if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
+      const b64 = bytesToBase64(payload);
+      fetch('/api/payload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, payload: b64, filename: filename || 'file' }),
+      }).catch(() => {
+        // Non-blocking if server endpoint is unavailable
+      });
+    }
+  } catch {
+    // Ignore fetch error
+  }
+
   return id;
 }
 
@@ -118,7 +137,7 @@ export function getMemoryPayload(id: string): Uint8Array | null {
 }
 
 /**
- * Retrieve a payload by its reference ID from memory cache or IndexedDB.
+ * Retrieve a payload by its reference ID from memory cache, IndexedDB, or server relay.
  */
 export async function getPayloadFromStore(id: string): Promise<Uint8Array | null> {
   const cleanId = id.trim().toLowerCase();
@@ -131,7 +150,7 @@ export async function getPayloadFromStore(id: string): Promise<Uint8Array | null
   // 2. Query IndexedDB
   try {
     const db = await openPayloadDb();
-    return await new Promise<Uint8Array | null>((resolve) => {
+    const local = await new Promise<Uint8Array | null>((resolve) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
       const store = tx.objectStore(STORE_NAME);
       const req = store.get(cleanId);
@@ -146,9 +165,43 @@ export async function getPayloadFromStore(id: string): Promise<Uint8Array | null
       };
       req.onerror = () => resolve(null);
     });
+    if (local) return local;
   } catch {
-    return null;
+    // Continue to server fetch
   }
+
+  // 3. Query server endpoint for cross-device retrieval (e.g. scanned from another phone or Google Lens)
+  try {
+    if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
+      const res = await fetch(`/api/payload?id=${encodeURIComponent(cleanId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.payload) {
+          const arr = base64ToBytes(data.payload);
+          memoryCache.set(cleanId, arr);
+          // Persist to local IndexedDB for offline access
+          try {
+            const db = await openPayloadDb();
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            tx.objectStore(STORE_NAME).put({
+              id: cleanId,
+              payload: arr,
+              filename: data.filename || 'file',
+              sizeBytes: arr.length,
+              timestamp: Date.now(),
+            });
+          } catch {
+            // Ignore storage cache failure
+          }
+          return arr;
+        }
+      }
+    }
+  } catch {
+    // Network / offline
+  }
+
+  return null;
 }
 
 /**

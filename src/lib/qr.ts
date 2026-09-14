@@ -22,6 +22,7 @@ export interface QrResult {
   frames: QrFrame[];
   sizeBytes: number;
   qrPayloadString: string;
+  fullStandaloneString?: string;
   warning?: string;
 }
 
@@ -126,9 +127,10 @@ export async function generateEncryptedQrCode(
     frameCount: 1,
     frames: [frame],
     sizeBytes,
-    qrPayloadString: fullPayloadString,
+    qrPayloadString: opticalString,
+    fullStandaloneString: fullPayloadString,
     warning: !fitsQr
-      ? `This file is large. For instant transfer to another device, use the Sound (.wav) file or tap "Copy ${isFile ? 'QBSF' : 'QBS'} Code".`
+      ? `This file is large. The short QR Code (${opticalString}) is ready for instant scanning and copying.`
       : undefined,
   };
 }
@@ -245,7 +247,7 @@ export async function resolveQrPayload(input: string): Promise<Uint8Array> {
       }
     }
     throw new Error(
-      'This code is a local reference ID created on another phone. To decode on this phone, please on the first phone click "Copy QBSF Code" to copy the complete encrypted code, or send the sound file (.wav) via WhatsApp as a Document.'
+      `Reference code "${trimmed}" was not found or expired. Please ensure the generating device is connected to sync, or send the Sound (.wav) file.`
     );
   }
   return parseAndNormalizeQrPayload(trimmed);
