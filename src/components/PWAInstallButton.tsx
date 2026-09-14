@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Smartphone, Check, Sparkles } from 'lucide-react';
 import { usePWAInstall } from './usePWAInstall';
+import { IOSInstallGuideModal } from './IOSInstallGuideModal';
 
 interface PWAInstallButtonProps {
   className?: string;
@@ -13,14 +14,22 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   variant = 'hero',
   onClicked,
 }) => {
-  const { isInstallable, isInIframe, install, openInBrowser } = usePWAInstall();
+  const { isInstallable, isIOS, isInIframe, install, openInBrowser } = usePWAInstall();
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+  const [showIOSGuide, setShowIOSGuide] = useState(false);
 
   const handleAction = async () => {
     if (onClicked) onClicked();
 
-    // 1. If native install prompt is ready, trigger it directly
+    // 1. If on iOS (iPhone / iPad), Apple WebKit blocks programmatic install prompts.
+    // Always show the dedicated iOS Safari Home Screen guide.
+    if (isIOS) {
+      setShowIOSGuide(true);
+      return;
+    }
+
+    // 2. If native Chromium / Android install prompt is ready, trigger it directly
     if (isInstallable) {
       try {
         const success = await install();
@@ -35,11 +44,11 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
       }
     }
 
-    // 2. If running inside preview iframe (aistudio.google.com),
+    // 3. If running inside preview iframe (aistudio.google.com),
     // browsers block native beforeinstallprompt inside sandboxed iframes.
     // Open directly in standard browser window so Chrome triggers prompt immediately!
     if (isInIframe) {
-      setToastMessage('Opening in Chrome to add shortcut...');
+      setToastMessage('Opening in browser to add shortcut...');
       setShowToast(true);
       setTimeout(() => {
         openInBrowser();
@@ -48,8 +57,8 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
       return;
     }
 
-    // 3. If in normal browser but beforeinstallprompt already resolved or pending
-    setToastMessage('Shortcuts: Top-right menu (⋮) > "Add to Home screen" / "Install app"');
+    // 4. If in normal browser but beforeinstallprompt already resolved or pending
+    setToastMessage('Menu (⋮) > "Add to Home screen" / "Install app"');
     setShowToast(true);
     setTimeout(() => setShowToast(false), 3500);
   };
@@ -75,6 +84,13 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
             <span>{toastMessage}</span>
           </div>
         )}
+
+        <IOSInstallGuideModal
+          isOpen={showIOSGuide}
+          onClose={() => setShowIOSGuide(false)}
+          isInIframe={isInIframe}
+          onOpenInSafari={openInBrowser}
+        />
       </>
     );
   }
@@ -99,6 +115,14 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
           <span>{toastMessage}</span>
         </div>
       )}
+
+      {/* Interactive Step-by-Step iOS Install Guide Modal */}
+      <IOSInstallGuideModal
+        isOpen={showIOSGuide}
+        onClose={() => setShowIOSGuide(false)}
+        isInIframe={isInIframe}
+        onOpenInSafari={openInBrowser}
+      />
     </>
   );
 };

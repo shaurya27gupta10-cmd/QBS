@@ -43,7 +43,11 @@ export function usePWAInstall() {
 
     // Detect iOS devices (Safari does not dispatch beforeinstallprompt)
     const userAgent = window.navigator.userAgent.toLowerCase();
-    const isIOSDevice = /iphone|ipad|ipod/.test(userAgent);
+    const isIOSDevice =
+      /iphone|ipad|ipod/.test(userAgent) ||
+      (typeof navigator !== 'undefined' &&
+        navigator.platform === 'MacIntel' &&
+        navigator.maxTouchPoints > 1);
     setIsIOS(isIOSDevice);
 
     const handleBeforeInstallPrompt = (e: Event) => {
