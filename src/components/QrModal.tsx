@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import {
   X,
   QrCode,
@@ -7,15 +7,10 @@ import {
   Check,
   Sparkles,
   KeyRound,
-  ChevronLeft,
-  ChevronRight,
-  Play,
-  Pause,
 } from 'lucide-react';
-import type { QrCodeData, QrFrame } from '../types';
+import type { QrCodeData } from '../types';
 import { bytesToBase64 } from '../lib/crypto';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { getOrGenerateFrame } from '../lib/qr';
 
 interface QrModalProps {
   isOpen: boolean;
@@ -36,59 +31,6 @@ export function QrModal({
 }: QrModalProps) {
   const [copiedCode, setCopiedCode] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [currentFrameIndex, setCurrentFrameIndex] = useState(1);
-  const [currentFrameDataUrl, setCurrentFrameDataUrl] = useState<string>('');
-  const [cachedFrames, setCachedFrames] = useState<QrFrame[]>([]);
-  const [isAutoCycling, setIsAutoCycling] = useState(false);
-  const cycleTimerRef = useRef<number | null>(null);
-
-  const totalFrames = qrCodeData?.frameCount || 1;
-  const isMultiPart = totalFrames > 1;
-
-  // Initialize or reset frame display when qrCodeData changes
-  useEffect(() => {
-    if (qrCodeData) {
-      setCurrentFrameIndex(1);
-      setCurrentFrameDataUrl(qrCodeData.dataUrl || '');
-      setCachedFrames(qrCodeData.frames || []);
-      setIsAutoCycling(isMultiPart);
-    }
-  }, [qrCodeData, isMultiPart]);
-
-  // Handle switching frame (lazy generation if needed)
-  const loadFrame = async (frameIdx: number) => {
-    if (!qrCodeData) return;
-    setCurrentFrameIndex(frameIdx);
-
-    const fullStr = qrCodeData.qrPayloadString || '';
-    const frame = await getOrGenerateFrame(fullStr, frameIdx, totalFrames, cachedFrames);
-    setCurrentFrameDataUrl(frame.dataUrl);
-
-    setCachedFrames((prev) => {
-      if (prev.some((f) => f.index === frameIdx)) return prev;
-      return [...prev, frame];
-    });
-  };
-
-  // Auto-cycle multi-part QR codes so another phone camera can capture all parts
-  useEffect(() => {
-    if (!isMultiPart || !isAutoCycling) {
-      if (cycleTimerRef.current) clearInterval(cycleTimerRef.current);
-      return;
-    }
-
-    cycleTimerRef.current = window.setInterval(() => {
-      setCurrentFrameIndex((prev) => {
-        const next = prev >= totalFrames ? 1 : prev + 1;
-        loadFrame(next);
-        return next;
-      });
-    }, 900);
-
-    return () => {
-      if (cycleTimerRef.current) clearInterval(cycleTimerRef.current);
-    };
-  }, [isMultiPart, isAutoCycling, totalFrames]);
 
   if (!isOpen || !qrCodeData) return null;
 
@@ -129,12 +71,12 @@ export function QrModal({
 
   // Download QR PNG
   const handleDownloadQrPng = () => {
-    const targetUrl = currentFrameDataUrl || qrCodeData.dataUrl;
+    const targetUrl = qrCodeData.dataUrl;
     if (!targetUrl) return;
     const a = document.createElement('a');
     a.href = targetUrl;
     const base = filename.replace(/\.[^/.]+$/, '');
-    a.download = isMultiPart ? `QBS-QR-${base}-part${currentFrameIndex}.png` : `QBS-QR-${base}.png`;
+    a.download = `QBS-QR-${base}.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -159,7 +101,7 @@ export function QrModal({
                 </span>
               </h3>
               <p className="text-[11px] text-slate-500">
-                {isMultiPart ? `Multi-part Stream (${totalFrames} parts)` : 'Self-contained Optical Carrier'}
+                Single Optical Carrier Code
               </p>
             </div>
           </div>
@@ -179,13 +121,13 @@ export function QrModal({
           </div>
         )}
 
-        {/* QR Code Canvas Card */}
+        {/* Single QR Code Canvas Card */}
         <div className="text-center space-y-3">
           <div className="relative p-3.5 bg-slate-50 rounded-2xl border border-slate-200 inline-block shadow-inner">
-            {currentFrameDataUrl ? (
+            {qrCodeData.dataUrl ? (
               <img
-                src={currentFrameDataUrl}
-                alt={`Encrypted QBS QR Code Frame ${currentFrameIndex}`}
+                src={qrCodeData.dataUrl}
+                alt="Encrypted QBS QR Code"
                 className="w-60 h-60 sm:w-68 sm:h-68 mx-auto object-contain rounded-lg shadow-xs"
               />
             ) : (
@@ -194,61 +136,9 @@ export function QrModal({
               </div>
             )}
 
-            {/* Multi-part Navigation Bar */}
-            {isMultiPart && (
-              <div className="mt-3 pt-2 border-t border-slate-200/80 flex items-center justify-between gap-2 px-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsAutoCycling(false);
-                    const prev = currentFrameIndex <= 1 ? totalFrames : currentFrameIndex - 1;
-                    loadFrame(prev);
-                  }}
-                  className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700"
-                  title="Previous frame"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-slate-800 font-mono">
-                    Part {currentFrameIndex} of {totalFrames}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setIsAutoCycling(!isAutoCycling)}
-                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
-                      isAutoCycling ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700'
-                    }`}
-                    title={isAutoCycling ? 'Pause slideshow' : 'Auto cycle parts for camera scanner'}
-                  >
-                    {isAutoCycling ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                    <span>{isAutoCycling ? 'Auto' : 'Play'}</span>
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsAutoCycling(false);
-                    const next = currentFrameIndex >= totalFrames ? 1 : currentFrameIndex + 1;
-                    loadFrame(next);
-                  }}
-                  className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700"
-                  title="Next frame"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-
             <div className="mt-2.5 flex items-center justify-center gap-1.5 text-[11px] text-slate-600 font-medium">
               <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-              <span>
-                {isMultiPart
-                  ? 'Keep second phone camera pointed at screen as parts cycle, or use Copy Code'
-                  : 'Scan with second phone camera or the Decode tab'}
-              </span>
+              <span>Scan with second phone camera or the Decode tab</span>
             </div>
           </div>
 
@@ -268,7 +158,7 @@ export function QrModal({
               <span className="text-slate-600">Security:</span>
               <span className="font-semibold text-emerald-700 flex items-center gap-1">
                 <Sparkles className="w-3 h-3" />
-                AES-256-GCM + Argon2id
+                AES-256-GCM + PBKDF2 / Argon2id
               </span>
             </div>
           </div>
@@ -282,7 +172,7 @@ export function QrModal({
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition-colors"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>{isMultiPart ? `Download Part ${currentFrameIndex}` : 'Download QR (.PNG)'}</span>
+              <span>Download QR (.PNG)</span>
             </button>
 
             {/* Copy Encrypted String */}

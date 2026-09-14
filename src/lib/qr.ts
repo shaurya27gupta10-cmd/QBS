@@ -69,20 +69,36 @@ export async function generateEncryptedQrCode(
   const fullPayloadString = `${prefix}${b64}`;
 
   // Always save payload to persistent local store as well for local quick retrieval
+  let refId: string | null = null;
   try {
-    await savePayloadToStore(payload, filename);
+    refId = await savePayloadToStore(payload, filename);
   } catch {
     // Non-blocking local storage failure
   }
 
   let singleDataUrl = '';
   let opticalString = fullPayloadString;
+  let fitsQr = false;
 
-  // 1. If payload is small enough (<= 2200 bytes in binary), embed directly into single portable QR
-  if (payload.length <= 2200) {
+  // 1. Try to generate a single self-contained QR code directly with full data
+  try {
+    singleDataUrl = await QRCode.toDataURL(fullPayloadString, {
+      errorCorrectionLevel: 'L',
+      margin: 2,
+      width: 440,
+      color: {
+        dark: '#0f172a',
+        light: '#ffffff',
+      },
+    });
+    opticalString = fullPayloadString;
+    fitsQr = true;
+  } catch {
+    // 2. If payload exceeds QR capacity (> ~2.9KB), generate ONE single QR code with local reference
+    opticalString = refId ? `${prefix}REF:${refId}` : fullPayloadString.slice(0, 1000);
     try {
-      singleDataUrl = await QRCode.toDataURL(fullPayloadString, {
-        errorCorrectionLevel: 'L',
+      singleDataUrl = await QRCode.toDataURL(opticalString, {
+        errorCorrectionLevel: 'M',
         margin: 2,
         width: 440,
         color: {
@@ -90,53 +106,30 @@ export async function generateEncryptedQrCode(
           light: '#ffffff',
         },
       });
-      opticalString = fullPayloadString;
-
-      const frame: QrFrame = {
-        index: 1,
-        total: 1,
-        dataUrl: singleDataUrl,
-        payloadString: opticalString,
-      };
-
-      return {
-        dataUrl: singleDataUrl,
-        fitsQr: true,
-        isMultiPart: false,
-        frameCount: 1,
-        frames: [frame],
-        sizeBytes,
-        qrPayloadString: fullPayloadString,
-      };
     } catch {
-      // Fall through to multi-part chunking
+      singleDataUrl = '';
     }
+    fitsQr = false;
   }
 
-  // 2. If payload exceeds single QR capacity (~2.9 KB base64),
-  // generate standard sequenced multi-part QR frames (QBSP:1/N:...)
-  const totalFrames = Math.ceil(fullPayloadString.length / MULTI_QR_CHUNK_SIZE);
-  const chunk1 = fullPayloadString.substring(0, MULTI_QR_CHUNK_SIZE);
-  const frame1Payload = `QBSP:1/${totalFrames}:${chunk1}`;
-
-  singleDataUrl = await generateQrFrameImage(frame1Payload);
-
-  const frame1: QrFrame = {
+  const frame: QrFrame = {
     index: 1,
-    total: totalFrames,
+    total: 1,
     dataUrl: singleDataUrl,
-    payloadString: frame1Payload,
+    payloadString: opticalString,
   };
 
   return {
     dataUrl: singleDataUrl,
-    fitsQr: false,
-    isMultiPart: true,
-    frameCount: totalFrames,
-    frames: [frame1],
+    fitsQr,
+    isMultiPart: false,
+    frameCount: 1,
+    frames: [frame],
     sizeBytes,
     qrPayloadString: fullPayloadString,
-    warning: `Multi-frame QR code (${totalFrames} parts). Tap "Copy ${isFile ? 'QBSF' : 'QBS'} Code" for instant 1-click transfer.`,
+    warning: !fitsQr
+      ? `This file is large. For instant transfer to another device, use the Sound (.wav) file or tap "Copy ${isFile ? 'QBSF' : 'QBS'} Code".`
+      : undefined,
   };
 }
 

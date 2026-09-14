@@ -670,7 +670,7 @@ export function EncodeView({ onTestDecode }: EncodeViewProps) {
       </div>
       )}
 
-      {/* QR Code Modal (Unlimited, Supports Single & Sequenced Multi-Part QR codes) */}
+      {/* QR Code Modal (Single Self-Contained QR Code) */}
       {showQrModal && generatedSound && qrResult && (
         <QrModal
           isOpen={showQrModal}

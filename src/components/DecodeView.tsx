@@ -267,6 +267,7 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     setError(null);
     setDecryptedMessage(null);
     setDecryptedFile(null);
+    setExtractedRawPayload(null);
     if (val.trim().length > 6) {
       try {
         const raw = await resolveQrPayload(val);
@@ -442,7 +443,9 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
         await new Promise((r) => setTimeout(r, 140));
 
         try {
-          if (extractedRawPayload && qrText.trim().length > 6) {
+          if (qrText.trim().length > 6) {
+            payload = await resolveQrPayload(qrText);
+          } else if (extractedRawPayload) {
             payload = extractedRawPayload;
           } else {
             payload = await resolveQrPayload(qrText);

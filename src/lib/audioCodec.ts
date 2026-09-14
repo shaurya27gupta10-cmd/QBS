@@ -122,7 +122,11 @@ export function synthesizeFskPcm(payload: Uint8Array): {
  * - qbsd chunk (embedded exact encrypted binary payload)
  * - data chunk (synthesized FSK audio samples)
  */
-export function buildWavFile(pcmSamples: Int16Array, payload: Uint8Array): Blob {
+export function buildWavFile(
+  pcmInput: Int16Array | { pcmSamples: Int16Array },
+  payload: Uint8Array
+): Blob {
+  const pcmSamples = pcmInput instanceof Int16Array ? pcmInput : pcmInput.pcmSamples;
   const pcmBytesLength = pcmSamples.length * 2;
 
   // QBSD chunk size: 4 bytes ID 'qbsd' + 4 bytes length + payload bytes (+ 1 pad byte if odd)
@@ -199,8 +203,20 @@ export function buildWavFile(pcmSamples: Int16Array, payload: Uint8Array): Blob 
  * Parses the RIFF container format to locate the 'qbsd' chunk, handles ID3 wrappers,
  * performs deep buffer scanning for the embedded container, and reports clear actionable guidance.
  */
-export function extractPayloadFromWav(arrayBuffer: ArrayBuffer): Uint8Array {
-  const bytes = new Uint8Array(arrayBuffer);
+export function extractPayloadFromWav(input: ArrayBuffer | Uint8Array): Uint8Array {
+  let bytes: Uint8Array;
+  let arrayBuffer: ArrayBuffer;
+
+  if (input instanceof Uint8Array) {
+    bytes = input;
+    arrayBuffer = input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
+  } else if (input instanceof ArrayBuffer) {
+    arrayBuffer = input;
+    bytes = new Uint8Array(input);
+  } else {
+    throw new Error('Invalid input format provided to audio extractor.');
+  }
+
   const totalLength = bytes.length;
 
   if (totalLength < 16) {
@@ -210,7 +226,9 @@ export function extractPayloadFromWav(arrayBuffer: ArrayBuffer): Uint8Array {
   // 1. Direct Binary Check: Is this a raw .qbs payload starting with magic header?
   const first4 = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
   if (first4 === 'QBSS' || first4 === 'QBS1' || first4 === 'QBSF') {
-    return bytes;
+    const clean = new Uint8Array(totalLength);
+    clean.set(bytes);
+    return clean;
   }
 
   // 2. Text / Base64 Check: Is this a text file containing an exported QBS string?
@@ -247,26 +265,66 @@ export function extractPayloadFromWav(arrayBuffer: ArrayBuffer): Uint8Array {
         (bytes[i + 7] << 24);
 
       if (chunkSize > 0 && i + 8 + chunkSize <= totalLength) {
-        const candidate = bytes.subarray(i + 8, i + 8 + chunkSize);
-        // Verify payload starts with valid magic header
-        if (candidate.length >= 4) {
-          const cMagic = String.fromCharCode(candidate[0], candidate[1], candidate[2], candidate[3]);
-          if (cMagic === 'QBSS' || cMagic === 'QBSF' || cMagic === 'QBS1') {
-            return candidate;
-          }
-        }
-        return candidate;
+        const clean = new Uint8Array(chunkSize);
+        clean.set(bytes.subarray(i + 8, i + 8 + chunkSize));
+        return clean;
       }
     }
   }
 
   // 4. Scan for embedded QBSS, QBSF, or QBS1 magic header anywhere in the buffer
-  // (In case an audio converter or player modified the container wrapper)
+  // (In case an audio converter, editor, or player modified the container wrapper)
   for (let i = 0; i <= totalLength - 32; i++) {
     if (bytes[i] === 0x51 && bytes[i + 1] === 0x42 && bytes[i + 2] === 0x53) {
       const char4 = String.fromCharCode(bytes[i + 3]);
-      if (char4 === 'S' || char4 === 'F' || char4 === '1') {
-        return bytes.subarray(i);
+      if (char4 === 'S') {
+        // v2 QBSS: Extract exact length from header
+        if (i + 51 <= totalLength) {
+          const view = new DataView(bytes.buffer, bytes.byteOffset + i, totalLength - i);
+          const metadataLen = view.getUint16(45, false);
+          if (i + 47 + metadataLen + 4 <= totalLength) {
+            const cipherLen = view.getUint32(47 + metadataLen, false);
+            const containerLen = 47 + metadataLen + 4 + cipherLen + 4;
+            if (i + containerLen <= totalLength) {
+              const clean = new Uint8Array(containerLen);
+              clean.set(bytes.subarray(i, i + containerLen));
+              return clean;
+            }
+          }
+        }
+      } else if (char4 === '1') {
+        // v1 QBS1 Message: Extract exact length
+        if (i + 38 <= totalLength) {
+          const view = new DataView(bytes.buffer, bytes.byteOffset + i, totalLength - i);
+          const cipherLen = view.getUint32(34, false);
+          const containerLen = 34 + 4 + cipherLen + 4;
+          if (i + containerLen <= totalLength) {
+            const clean = new Uint8Array(containerLen);
+            clean.set(bytes.subarray(i, i + containerLen));
+            return clean;
+          }
+        }
+      } else if (char4 === 'F') {
+        // v1 QBSF File
+        if (i + 44 <= totalLength) {
+          const view = new DataView(bytes.buffer, bytes.byteOffset + i, totalLength - i);
+          let off = 34;
+          const fnLen = view.getUint16(off, false);
+          off += 2 + fnLen;
+          if (i + off + 2 <= totalLength) {
+            const mimeLen = view.getUint16(off, false);
+            off += 2 + mimeLen + 4; // skip mime + origSize (4)
+            if (i + off + 4 <= totalLength) {
+              const cipherLen = view.getUint32(off, false);
+              const containerLen = off + 4 + cipherLen + 4;
+              if (i + containerLen <= totalLength) {
+                const clean = new Uint8Array(containerLen);
+                clean.set(bytes.subarray(i, i + containerLen));
+                return clean;
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -338,7 +396,9 @@ export function extractPayloadFromWav(arrayBuffer: ArrayBuffer): Uint8Array {
         if (offset + chunkSize > maxOffset) {
           throw new Error('The audio container is truncated or damaged.');
         }
-        return new Uint8Array(arrayBuffer.slice(riffOffset + offset, riffOffset + offset + chunkSize));
+        const clean = new Uint8Array(chunkSize);
+        clean.set(new Uint8Array(arrayBuffer, riffOffset + offset, chunkSize));
+        return clean;
       }
 
       const paddedSize = chunkSize + (chunkSize % 2);
