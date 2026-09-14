@@ -7,7 +7,6 @@ import {
   Check,
   QrCode,
   FileAudio,
-  FileArchive,
   ExternalLink,
   ShieldCheck,
   AlertCircle
@@ -58,8 +57,6 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   const [shareStatus, setShareStatus] = useState<string | null>(null);
   const [shareError, setShareError] = useState<string | null>(null);
 
-  const [showCodePreview, setShowCodePreview] = useState(false);
-
   if (!isOpen) return null;
 
   let isFile = false;
@@ -83,9 +80,8 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         setShareStatus(null);
       }, 3500);
     } else {
-      setShowCodePreview(true);
-      setShareStatus('Clipboard access blocked by browser. You can select and copy from the code box below.');
-      setTimeout(() => setShareStatus(null), 5000);
+      setShareStatus('Clipboard access restricted by browser.');
+      setTimeout(() => setShareStatus(null), 4000);
     }
   };
 
@@ -191,22 +187,6 @@ export const ShareModal: React.FC<ShareModalProps> = ({
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  };
-
-  // Download Portable .qbs Container File
-  const handleDownloadContainer = () => {
-    const blob = new Blob([rawPayload], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const baseName = filename.replace(/\.[^/.]+$/, '');
-    a.download = `${baseName}.qbs`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setShareStatus('Downloaded encrypted container (.qbs)');
-    setTimeout(() => setShareStatus(null), 3000);
   };
 
   return (
@@ -362,85 +342,6 @@ export const ShareModal: React.FC<ShareModalProps> = ({
             </div>
           </div>
         )}
-
-        {/* Option 3: Text Code / Portable File */}
-        <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <FileArchive className="w-4 h-4 text-emerald-600" />
-              <span className="text-xs font-bold text-slate-800">Encrypted Payload String</span>
-            </div>
-            <span className="text-[11px] font-mono text-slate-500">
-              {formatBytes(rawPayload.length)}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => handleCopyText(payloadString, 'code')}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors"
-            >
-              {copiedType === 'code' ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-emerald-600" />
-                  <span className="text-emerald-700 font-bold">Copied!</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>Copy Code Text</span>
-                </>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleDownloadContainer}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Save .QBS File</span>
-            </button>
-          </div>
-
-          <div className="flex items-center justify-between pt-1">
-            <button
-              type="button"
-              onClick={() => setShowCodePreview(!showCodePreview)}
-              className="text-[11px] text-blue-600 hover:text-blue-800 font-medium hover:underline"
-            >
-              {showCodePreview ? 'Hide Raw Code' : 'View / Select Raw Code'}
-            </button>
-            {onOpenInDecoder && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenInDecoder();
-                }}
-                className="text-[11px] text-emerald-700 hover:text-emerald-800 font-semibold hover:underline"
-              >
-                Test in Decoder &rarr;
-              </button>
-            )}
-          </div>
-
-          {showCodePreview && (
-            <div className="space-y-1.5 pt-1 animate-fade-in">
-              <textarea
-                readOnly
-                rows={3}
-                value={payloadString}
-                onClick={(e) => (e.target as HTMLTextAreaElement).select()}
-                className="w-full p-2 text-[10px] font-mono bg-white border border-slate-300 rounded-lg text-slate-800 select-all focus:ring-1 focus:ring-blue-500"
-              />
-              <p className="text-[10px] text-slate-500">
-                Click inside box to select all text, then copy manually (Ctrl+C / tap-and-hold).
-              </p>
-            </div>
-          )}
-        </div>
 
         {/* Footer Actions */}
         <div className="pt-2 flex items-center justify-between gap-3 border-t border-slate-100">
