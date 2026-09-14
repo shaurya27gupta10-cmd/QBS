@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   X,
   QrCode,
@@ -7,10 +7,15 @@ import {
   Check,
   Sparkles,
   KeyRound,
+  ChevronLeft,
+  ChevronRight,
+  Play,
+  Pause,
 } from 'lucide-react';
-import type { QrCodeData } from '../types';
+import type { QrCodeData, QrFrame } from '../types';
 import { bytesToBase64 } from '../lib/crypto';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { getOrGenerateFrame } from '../lib/qr';
 
 interface QrModalProps {
   isOpen: boolean;
@@ -31,12 +36,64 @@ export function QrModal({
 }: QrModalProps) {
   const [copiedCode, setCopiedCode] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [currentFrameIndex, setCurrentFrameIndex] = useState(1);
+  const [currentFrameDataUrl, setCurrentFrameDataUrl] = useState<string>('');
+  const [cachedFrames, setCachedFrames] = useState<QrFrame[]>([]);
+  const [isAutoCycling, setIsAutoCycling] = useState(false);
+  const cycleTimerRef = useRef<number | null>(null);
+
+  const totalFrames = qrCodeData?.frameCount || 1;
+  const isMultiPart = totalFrames > 1;
+
+  // Initialize or reset frame display when qrCodeData changes
+  useEffect(() => {
+    if (qrCodeData) {
+      setCurrentFrameIndex(1);
+      setCurrentFrameDataUrl(qrCodeData.dataUrl || '');
+      setCachedFrames(qrCodeData.frames || []);
+      setIsAutoCycling(isMultiPart);
+    }
+  }, [qrCodeData, isMultiPart]);
+
+  // Handle switching frame (lazy generation if needed)
+  const loadFrame = async (frameIdx: number) => {
+    if (!qrCodeData) return;
+    setCurrentFrameIndex(frameIdx);
+
+    const fullStr = qrCodeData.qrPayloadString || '';
+    const frame = await getOrGenerateFrame(fullStr, frameIdx, totalFrames, cachedFrames);
+    setCurrentFrameDataUrl(frame.dataUrl);
+
+    setCachedFrames((prev) => {
+      if (prev.some((f) => f.index === frameIdx)) return prev;
+      return [...prev, frame];
+    });
+  };
+
+  // Auto-cycle multi-part QR codes so another phone camera can capture all parts
+  useEffect(() => {
+    if (!isMultiPart || !isAutoCycling) {
+      if (cycleTimerRef.current) clearInterval(cycleTimerRef.current);
+      return;
+    }
+
+    cycleTimerRef.current = window.setInterval(() => {
+      setCurrentFrameIndex((prev) => {
+        const next = prev >= totalFrames ? 1 : prev + 1;
+        loadFrame(next);
+        return next;
+      });
+    }, 900);
+
+    return () => {
+      if (cycleTimerRef.current) clearInterval(cycleTimerRef.current);
+    };
+  }, [isMultiPart, isAutoCycling, totalFrames]);
 
   if (!isOpen || !qrCodeData) return null;
 
   const qrPayloadString = qrCodeData.qrPayloadString || '';
-  const opticalCode = qrCodeData.frames[0]?.payloadString || qrPayloadString;
-  const isFile = qrPayloadString.startsWith('QBSF:') || opticalCode.startsWith('QBSF:');
+  const isFile = qrPayloadString.startsWith('QBSF:');
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
@@ -46,21 +103,20 @@ export function QrModal({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // Full standalone Base64 string
+  // Full standalone Base64 string (always portable across any phone)
   const fullBase64Code =
     qrPayloadString ||
     (isFile ? `QBSF:${bytesToBase64(rawPayload)}` : `QBSS:${bytesToBase64(rawPayload)}`);
 
-  // Primary Copy: Copies the exact decodable QR code text (opticalCode, which is reference or base64)
+  // Primary Copy: Copies the 100% full standalone code for instant cross-device transfer
   const handleCopyCode = async () => {
-    const codeToCopy = opticalCode || fullBase64Code;
-    const res = await copyTextToClipboard(codeToCopy);
+    const res = await copyTextToClipboard(fullBase64Code);
     if (res.success) {
       setCopiedCode(true);
       setStatusMessage(
         isFile
-          ? 'Copied QBSF encrypted code to clipboard! You can paste it directly into the Decoder.'
-          : 'Copied QBS encrypted code to clipboard! You can paste it directly into the Decoder.'
+          ? 'Copied QBSF encrypted code to clipboard! You can paste it directly into the Decoder on any phone.'
+          : 'Copied QBS encrypted code to clipboard! You can paste it directly into the Decoder on any phone.'
       );
     } else {
       setStatusMessage('Clipboard access restricted. Please use the "Test in Decoder" button below.');
@@ -71,13 +127,14 @@ export function QrModal({
     }, 4000);
   };
 
-  // Download single QR PNG
+  // Download QR PNG
   const handleDownloadQrPng = () => {
-    if (!qrCodeData.dataUrl) return;
+    const targetUrl = currentFrameDataUrl || qrCodeData.dataUrl;
+    if (!targetUrl) return;
     const a = document.createElement('a');
-    a.href = qrCodeData.dataUrl;
+    a.href = targetUrl;
     const base = filename.replace(/\.[^/.]+$/, '');
-    a.download = `QBS-QR-${base}.png`;
+    a.download = isMultiPart ? `QBS-QR-${base}-part${currentFrameIndex}.png` : `QBS-QR-${base}.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -102,7 +159,7 @@ export function QrModal({
                 </span>
               </h3>
               <p className="text-[11px] text-slate-500">
-                Single self-contained optical carrier
+                {isMultiPart ? `Multi-part Stream (${totalFrames} parts)` : 'Self-contained Optical Carrier'}
               </p>
             </div>
           </div>
@@ -125,10 +182,10 @@ export function QrModal({
         {/* QR Code Canvas Card */}
         <div className="text-center space-y-3">
           <div className="relative p-3.5 bg-slate-50 rounded-2xl border border-slate-200 inline-block shadow-inner">
-            {qrCodeData.dataUrl ? (
+            {currentFrameDataUrl ? (
               <img
-                src={qrCodeData.dataUrl}
-                alt="Encrypted QBS QR Code"
+                src={currentFrameDataUrl}
+                alt={`Encrypted QBS QR Code Frame ${currentFrameIndex}`}
                 className="w-60 h-60 sm:w-68 sm:h-68 mx-auto object-contain rounded-lg shadow-xs"
               />
             ) : (
@@ -136,9 +193,62 @@ export function QrModal({
                 <QrCode className="w-16 h-16 text-slate-400 animate-pulse" />
               </div>
             )}
+
+            {/* Multi-part Navigation Bar */}
+            {isMultiPart && (
+              <div className="mt-3 pt-2 border-t border-slate-200/80 flex items-center justify-between gap-2 px-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAutoCycling(false);
+                    const prev = currentFrameIndex <= 1 ? totalFrames : currentFrameIndex - 1;
+                    loadFrame(prev);
+                  }}
+                  className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700"
+                  title="Previous frame"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-800 font-mono">
+                    Part {currentFrameIndex} of {totalFrames}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsAutoCycling(!isAutoCycling)}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                      isAutoCycling ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700'
+                    }`}
+                    title={isAutoCycling ? 'Pause slideshow' : 'Auto cycle parts for camera scanner'}
+                  >
+                    {isAutoCycling ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                    <span>{isAutoCycling ? 'Auto' : 'Play'}</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAutoCycling(false);
+                    const next = currentFrameIndex >= totalFrames ? 1 : currentFrameIndex + 1;
+                    loadFrame(next);
+                  }}
+                  className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700"
+                  title="Next frame"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
             <div className="mt-2.5 flex items-center justify-center gap-1.5 text-[11px] text-slate-600 font-medium">
               <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-              <span>Scan with any camera or the Decode tab</span>
+              <span>
+                {isMultiPart
+                  ? 'Keep second phone camera pointed at screen as parts cycle, or use Copy Code'
+                  : 'Scan with second phone camera or the Decode tab'}
+              </span>
             </div>
           </div>
 
@@ -147,7 +257,7 @@ export function QrModal({
             <div className="flex items-center justify-between text-xs">
               <span className="text-slate-600">Payload Format:</span>
               <span className="font-mono font-bold text-blue-700">
-                {isFile ? 'QBSF (File Payload)' : 'QBSS (Sound/Message Payload)'}
+                {isFile ? 'QBSF (Encrypted File)' : 'QBSS (Encrypted Payload)'}
               </span>
             </div>
             <div className="flex items-center justify-between text-xs">
@@ -172,7 +282,7 @@ export function QrModal({
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition-colors"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>Download QR (.PNG)</span>
+              <span>{isMultiPart ? `Download Part ${currentFrameIndex}` : 'Download QR (.PNG)'}</span>
             </button>
 
             {/* Copy Encrypted String */}
@@ -180,7 +290,7 @@ export function QrModal({
               type="button"
               onClick={handleCopyCode}
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors border border-slate-300"
-              title="Copies the exact code that decodes instantly"
+              title="Copies the standalone code that decodes instantly on any device"
             >
               {copiedCode ? (
                 <>

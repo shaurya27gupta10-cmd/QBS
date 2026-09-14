@@ -179,20 +179,18 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     }
 
     // 2b. Check if user dropped a text file containing an exported QBS string or JSON chunk
-    const isTextFile = (name && name.match(/\.(txt|json|log)$/i)) || (file.type && file.type.startsWith('text/'));
+    const isTextFile = (name && name.match(/\.(txt|json|log|text)$/i)) || (file.type && file.type.startsWith('text/'));
     if (isTextFile) {
       try {
         const textContent = new TextDecoder().decode(headerBytes);
         if (
-          textContent.startsWith('QBSS') ||
-          textContent.startsWith('QBS1') ||
-          textContent.startsWith('QBSF') ||
+          textContent.includes('QBS') ||
           textContent.startsWith('{"') ||
           textContent.startsWith('data:image')
         ) {
           const fullText = await file.text();
           setSourceMode('qr');
-          setQrText(fullText.trim());
+          handleQrTextChange(fullText.trim());
           setQrStatusSuccess('Text code imported successfully');
           setTimeout(() => setQrStatusSuccess(null), 3500);
           return;
@@ -202,13 +200,26 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
       }
     }
 
-    // 3. Audio WAV format check (RIFF header check or audio MIME / extension)
+    // 3. Audio & Container format check
+    // Test if extractPayloadFromWav can extract a payload directly
+    let detectedPayload: Uint8Array | null = null;
+    let extractError: string | null = null;
+    try {
+      detectedPayload = extractPayloadFromWav(buffer);
+    } catch (err: unknown) {
+      extractError = err instanceof Error ? err.message : String(err);
+    }
+
     const isRiffHeader = header4Str === 'RIFF';
+    const isId3Header = header4Str.startsWith('ID3');
     const isWavExt = name && (name.toLowerCase().endsWith('.wav') || name.toLowerCase().endsWith('.wave'));
     const isAudioMime = file.type && (file.type.includes('audio') || file.type.includes('wav'));
 
-    if (!isRiffHeader && !isWavExt && !isAudioMime) {
-      setError('This format is not supported. Please use a QBS WAV audio file, a QR screenshot, or an exported code file.');
+    if (!detectedPayload && !isRiffHeader && !isId3Header && !isWavExt && !isAudioMime) {
+      setError(
+        extractError ||
+          'This format is not recognized. Please use the original QBS WAV audio file (shared as Document) or paste the encrypted code.'
+      );
       return;
     }
 
@@ -226,12 +237,16 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     audioUrlRef.current = url;
     setAudioUrl(url);
 
-    // Pre-parse the WAV container to detect payload type before password entry
-    try {
-      const payload = extractPayloadFromWav(buffer);
-      analyzePayloadBytes(payload);
-    } catch {
-      // Ignore if user hasn't pressed decode yet; handleDecode will report full error
+    // Pre-parse the container to detect payload type before password entry
+    if (detectedPayload) {
+      analyzePayloadBytes(detectedPayload);
+    } else {
+      try {
+        const payload = extractPayloadFromWav(buffer);
+        analyzePayloadBytes(payload);
+      } catch {
+        // Will be shown when user clicks Decode
+      }
     }
   }, []);
 

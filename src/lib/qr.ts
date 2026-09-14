@@ -42,8 +42,8 @@ export async function generateQrFrameImage(text: string): Promise<string> {
 
 /**
  * Generates a self-contained QR code containing the encrypted binary payload.
- * Generates ONLY ONE QR code directly containing the QBSF / QBSS payload code.
- * For larger files, automatically binds an instant reference QR code so it NEVER fails.
+ * For payloads <= 2200 bytes, embeds the full self-contained QBS code directly into 1 QR code.
+ * For larger payloads, generates sequenced multi-part QR codes (QBSP:1/N:...) so data is truly portable across devices.
  */
 export async function generateEncryptedQrCode(
   payload: Uint8Array,
@@ -68,13 +68,17 @@ export async function generateEncryptedQrCode(
   const b64 = bytesToBase64(payload);
   const fullPayloadString = `${prefix}${b64}`;
 
-  // Always save payload to persistent local store so it can be retrieved by camera scanner
-  const refId = await savePayloadToStore(payload, filename);
+  // Always save payload to persistent local store as well for local quick retrieval
+  try {
+    await savePayloadToStore(payload, filename);
+  } catch {
+    // Non-blocking local storage failure
+  }
 
   let singleDataUrl = '';
   let opticalString = fullPayloadString;
 
-  // 1. If payload is small enough (<=2200 bytes), embed directly in single QR
+  // 1. If payload is small enough (<= 2200 bytes in binary), embed directly into single portable QR
   if (payload.length <= 2200) {
     try {
       singleDataUrl = await QRCode.toDataURL(fullPayloadString, {
@@ -87,41 +91,52 @@ export async function generateEncryptedQrCode(
         },
       });
       opticalString = fullPayloadString;
+
+      const frame: QrFrame = {
+        index: 1,
+        total: 1,
+        dataUrl: singleDataUrl,
+        payloadString: opticalString,
+      };
+
+      return {
+        dataUrl: singleDataUrl,
+        fitsQr: true,
+        isMultiPart: false,
+        frameCount: 1,
+        frames: [frame],
+        sizeBytes,
+        qrPayloadString: fullPayloadString,
+      };
     } catch {
-      singleDataUrl = '';
+      // Fall through to multi-part chunking
     }
   }
 
-  // 2. If payload exceeds single QR optical limit (~2.9 KB),
-  // use reference QR code that NEVER fails and always renders beautifully
-  if (!singleDataUrl) {
-    opticalString = `${prefix}REF:${refId}`;
-    singleDataUrl = await QRCode.toDataURL(opticalString, {
-      errorCorrectionLevel: 'M',
-      margin: 2,
-      width: 440,
-      color: {
-        dark: '#0f172a',
-        light: '#ffffff',
-      },
-    });
-  }
+  // 2. If payload exceeds single QR capacity (~2.9 KB base64),
+  // generate standard sequenced multi-part QR frames (QBSP:1/N:...)
+  const totalFrames = Math.ceil(fullPayloadString.length / MULTI_QR_CHUNK_SIZE);
+  const chunk1 = fullPayloadString.substring(0, MULTI_QR_CHUNK_SIZE);
+  const frame1Payload = `QBSP:1/${totalFrames}:${chunk1}`;
 
-  const frame: QrFrame = {
+  singleDataUrl = await generateQrFrameImage(frame1Payload);
+
+  const frame1: QrFrame = {
     index: 1,
-    total: 1,
+    total: totalFrames,
     dataUrl: singleDataUrl,
-    payloadString: opticalString,
+    payloadString: frame1Payload,
   };
 
   return {
     dataUrl: singleDataUrl,
-    fitsQr: true,
-    isMultiPart: false,
-    frameCount: 1,
-    frames: [frame],
+    fitsQr: false,
+    isMultiPart: true,
+    frameCount: totalFrames,
+    frames: [frame1],
     sizeBytes,
     qrPayloadString: fullPayloadString,
+    warning: `Multi-frame QR code (${totalFrames} parts). Tap "Copy ${isFile ? 'QBSF' : 'QBS'} Code" for instant 1-click transfer.`,
   };
 }
 
@@ -236,7 +251,9 @@ export async function resolveQrPayload(input: string): Promise<Uint8Array> {
         return stored;
       }
     }
-    throw new Error('Encrypted payload reference not found in storage. Please scan or upload the sound file (.wav) or paste the complete code.');
+    throw new Error(
+      'This code is a local reference ID created on another phone. To decode on this phone, please on the first phone click "Copy QBSF Code" to copy the complete encrypted code, or send the sound file (.wav) via WhatsApp as a Document.'
+    );
   }
   return parseAndNormalizeQrPayload(trimmed);
 }
@@ -248,6 +265,9 @@ export async function resolveQrPayload(input: string): Promise<Uint8Array> {
  */
 export function parseAndNormalizeQrPayload(input: string): Uint8Array {
   let str = input.trim();
+
+  // Normalize any whitespace around colons (e.g. "QBSF : <b64>" -> "QBSF:<b64>")
+  str = str.replace(/(QBSS|QBSF|QBS1|QBS2|QBS|QBSP|REF)\s*:\s*/gi, '$1:');
 
   // If this is a reference code, check in-memory cache synchronously
   if (isPayloadReferenceCode(str)) {
@@ -276,7 +296,7 @@ export function parseAndNormalizeQrPayload(input: string): Uint8Array {
     str = embeddedMatch[1];
   } else {
     // Strip known prefixes if at the beginning
-    str = str.replace(/^(?:QBSS|QBSF|QBS1|QBS2|QBS):/i, '');
+    str = str.replace(/^(?:QBSS|QBSF|QBS1|QBS2|QBS)\s*:\s*/i, '');
   }
 
   // Strip all internal whitespace, linebreaks, tabs, or non-base64 characters

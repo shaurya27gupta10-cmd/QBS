@@ -99,28 +99,19 @@ export const ShareModal: React.FC<ShareModalProps> = ({
       if (navigator.canShare && navigator.canShare({ files: [qrFile] })) {
         await navigator.share({
           title: 'QBS Encrypted QR Code',
-          text: `Encrypted QR payload for "${filename}". Decrypt using QBS Secure Sound with shared password.`,
+          text: `Encrypted QR code for "${filename}". Decrypt using QBS Secure Sound with the secret password.`,
           files: [qrFile],
         });
         setShareStatus('QR Code shared successfully!');
         setTimeout(() => setShareStatus(null), 3000);
-      } else if (navigator.share) {
-        await navigator.share({
-          title: 'QBS Encrypted QR Code',
-          text: `Encrypted QR payload string:\n${payloadString}`,
-        });
-        setShareStatus('Payload shared successfully!');
-        setTimeout(() => setShareStatus(null), 3000);
       } else {
-        // Fallback: download image and copy text
+        // Fallback: download image directly
         handleDownloadQrImage();
-        handleCopyText(payloadString, 'qr-text');
-        setShareStatus('Image saved & text copied (Web Share not supported in this browser).');
-        setTimeout(() => setShareStatus(null), 4000);
+        setShareStatus('QR code image saved to device.');
+        setTimeout(() => setShareStatus(null), 3000);
       }
     } catch (err: unknown) {
       if ((err as Error).name !== 'AbortError') {
-        // Fallback
         handleDownloadQrImage();
         setShareStatus('QR image downloaded to device.');
         setTimeout(() => setShareStatus(null), 3000);
@@ -321,6 +312,9 @@ export const ShareModal: React.FC<ShareModalProps> = ({
             <p className="text-[11px] text-slate-600 leading-relaxed">
               Full acoustic carrier encoding. Send over messaging apps, radio, or play through speaker.
             </p>
+            <div className="p-2 rounded-lg bg-blue-50/80 border border-blue-100 text-[11px] text-blue-800">
+              <span className="font-semibold">WhatsApp Tip:</span> Send as <strong>Document</strong> (not Audio) so WhatsApp doesn't compress or distort the sound carrier.
+            </div>
 
             <div className="grid grid-cols-2 gap-2">
               <button

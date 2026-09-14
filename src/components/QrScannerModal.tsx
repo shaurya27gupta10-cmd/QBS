@@ -45,6 +45,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [isProcessingImage, setIsProcessingImage] = useState<boolean>(false);
   const [detectedSuccess, setDetectedSuccess] = useState<boolean>(false);
+  const [multiPartProgress, setMultiPartProgress] = useState<{ current: number; total: number } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -52,6 +53,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   const animationFrameRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isHandledRef = useRef<boolean>(false);
+  const partsMapRef = useRef<Map<number, string>>(new Map());
 
   // Stop camera stream cleanly
   const stopCamera = () => {
@@ -70,6 +72,8 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   const startCamera = async () => {
     stopCamera();
     isHandledRef.current = false;
+    partsMapRef.current.clear();
+    setMultiPartProgress(null);
     setCameraError(null);
     setDetectedSuccess(false);
 
@@ -111,6 +115,52 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   // Process a scanned raw code text automatically
   const handleScannedData = (scannedCode: string) => {
     if (isHandledRef.current) return;
+
+    // Check if this is a multi-part QR frame (QBSP:idx/total:data)
+    const multiMatch = scannedCode.match(/^QBSP\s*:\s*(\d+)\s*\/\s*(\d+)\s*:\s*([\s\S]+)$/i);
+    if (multiMatch) {
+      const idx = parseInt(multiMatch[1], 10);
+      const total = parseInt(multiMatch[2], 10);
+      const chunk = multiMatch[3];
+
+      if (!partsMapRef.current.has(idx)) {
+        partsMapRef.current.set(idx, chunk);
+        try {
+          navigator.vibrate?.(40);
+        } catch {
+          // ignore
+        }
+      }
+
+      setMultiPartProgress({ current: partsMapRef.current.size, total });
+
+      // If all parts have arrived, assemble them!
+      if (partsMapRef.current.size >= total) {
+        isHandledRef.current = true;
+        playScanBeep();
+        try {
+          navigator.vibrate?.(80);
+        } catch {
+          // ignore
+        }
+
+        let assembled = '';
+        for (let i = 1; i <= total; i++) {
+          assembled += partsMapRef.current.get(i) || '';
+        }
+
+        setDetectedSuccess(true);
+        stopCamera();
+
+        setTimeout(() => {
+          onScanSuccess(assembled);
+          onClose();
+        }, 300);
+      }
+      return;
+    }
+
+    // Standard single QR code
     isHandledRef.current = true;
 
     // Instant acoustic + haptic feedback
@@ -268,12 +318,18 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
             </div>
           )}
 
-          {/* Scanning Guidance Badge */}
+          {/* Scanning Guidance Badge or Multi-Part Progress */}
           {isScanning && !detectedSuccess && (
             <div className="absolute bottom-3 inset-x-3 flex justify-center pointer-events-none">
-              <span className="px-3 py-1 rounded-full bg-slate-900/85 backdrop-blur-md text-[11px] font-medium text-slate-200 border border-slate-700/60 shadow-lg">
-                Automatic scan active &bull; Point at QBS QR code
-              </span>
+              {multiPartProgress ? (
+                <span className="px-3 py-1.5 rounded-full bg-blue-900/90 backdrop-blur-md text-[11px] font-bold text-cyan-200 border border-cyan-500/50 shadow-lg animate-pulse">
+                  Captured {multiPartProgress.current} / {multiPartProgress.total} parts &bull; Keep camera pointed!
+                </span>
+              ) : (
+                <span className="px-3 py-1 rounded-full bg-slate-900/85 backdrop-blur-md text-[11px] font-medium text-slate-200 border border-slate-700/60 shadow-lg">
+                  Automatic scan active &bull; Point at QBS QR code
+                </span>
+              )}
             </div>
           )}
         </div>
