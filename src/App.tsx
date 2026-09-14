@@ -14,10 +14,12 @@ import { SecurityView } from './components/SecurityView';
 import { Footer } from './components/Footer';
 import { TermsModal, TERMS_STORAGE_KEY } from './components/TermsModal';
 import { AppOpeningEffect } from './components/AppOpeningEffect';
+import { AboutModal } from './components/AboutModal';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('home');
   const [showOpeningEffect, setShowOpeningEffect] = useState(true);
+  const [showAboutModal, setShowAboutModal] = useState(false);
   const [testDecodeFile, setTestDecodeFile] = useState<{
     blob: Blob;
     filename: string;
@@ -75,7 +77,11 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 font-sans text-slate-900 antialiased selection:bg-blue-100 selection:text-blue-900">
       {/* Top Navigation */}
-      <Header activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Header
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        onOpenAbout={() => setShowAboutModal(true)}
+      />
 
       {/* Main Content Area */}
       <main className="flex-1">
@@ -87,12 +93,22 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <Footer setActiveTab={setActiveTab} onOpenTerms={handleOpenTermsFromFooter} />
+      <Footer
+        setActiveTab={setActiveTab}
+        onOpenTerms={handleOpenTermsFromFooter}
+        onOpenAbout={() => setShowAboutModal(true)}
+      />
 
       {/* App Opening Effect with Animated Soundwave Logo */}
       {showOpeningEffect && (
         <AppOpeningEffect onComplete={() => setShowOpeningEffect(false)} />
       )}
+
+      {/* About Modal with Animated Logo & Online Details */}
+      <AboutModal
+        isOpen={showAboutModal}
+        onClose={() => setShowAboutModal(false)}
+      />
 
       {/* Mandatory / Informational Security, Privacy & Terms Modal */}
       <TermsModal

@@ -5,9 +5,10 @@ import { QbsLogo } from './QbsLogo';
 interface FooterProps {
   setActiveTab: (tab: ActiveTab) => void;
   onOpenTerms?: () => void;
+  onOpenAbout?: () => void;
 }
 
-export function Footer({ setActiveTab, onOpenTerms }: FooterProps) {
+export function Footer({ setActiveTab, onOpenTerms, onOpenAbout }: FooterProps) {
   return (
     <footer className="bg-white border-t border-slate-200 mt-16">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -57,6 +58,14 @@ export function Footer({ setActiveTab, onOpenTerms }: FooterProps) {
             >
               Security
             </button>
+            {onOpenAbout && (
+              <button
+                onClick={onOpenAbout}
+                className="hover:text-blue-600 transition-colors"
+              >
+                About
+              </button>
+            )}
             {onOpenTerms && (
               <button
                 onClick={onOpenTerms}

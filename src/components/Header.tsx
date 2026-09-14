@@ -1,16 +1,27 @@
 import { useState, type ReactNode } from 'react';
-import { Shield, KeyRound, Radio, HelpCircle, Menu, X, Lock } from 'lucide-react';
+import { Shield, KeyRound, Radio, HelpCircle, Menu, X, Lock, Info } from 'lucide-react';
 import { ActiveTab } from '../types';
 import { QbsLogo } from './QbsLogo';
 import { PWAInstallButton } from './PWAInstallButton';
+import { AboutModal } from './AboutModal';
 
 interface HeaderProps {
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
+  onOpenAbout?: () => void;
 }
 
-export function Header({ activeTab, setActiveTab }: HeaderProps) {
+export function Header({ activeTab, setActiveTab, onOpenAbout }: HeaderProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [showAboutModal, setShowAboutModal] = useState(false);
+
+  const handleOpenAbout = () => {
+    if (onOpenAbout) {
+      onOpenAbout();
+    } else {
+      setShowAboutModal(true);
+    }
+  };
 
   const navItems: { id: ActiveTab; label: string; icon: ReactNode }[] = [
     { id: 'home', label: 'Home', icon: <Shield className="w-4 h-4" /> },
@@ -61,6 +72,15 @@ export function Header({ activeTab, setActiveTab }: HeaderProps) {
                   </button>
                 );
               })}
+              <button
+                id="nav-about"
+                onClick={handleOpenAbout}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+                title="About QBS Secure Sound"
+              >
+                <Info className="w-4 h-4" />
+                <span>About</span>
+              </button>
             </nav>
 
             <div className="h-5 w-px bg-slate-200 mx-1" />
@@ -105,6 +125,19 @@ export function Header({ activeTab, setActiveTab }: HeaderProps) {
               </button>
             );
           })}
+          {/* About Section in Three-Line Menu */}
+          <button
+            id="mobile-nav-about"
+            onClick={() => {
+              setMobileMenuOpen(false);
+              handleOpenAbout();
+            }}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+          >
+            <Info className="w-4 h-4 text-blue-600" />
+            <span>About</span>
+          </button>
+
           {/* Add Shortcut / Install Button inside Menu (Exact 2nd Image Style) */}
           <div className="pt-2">
             <PWAInstallButton
@@ -113,6 +146,12 @@ export function Header({ activeTab, setActiveTab }: HeaderProps) {
           </div>
         </div>
       )}
+
+      {/* About Modal with Animated Soundwave Logo & Online Details */}
+      <AboutModal
+        isOpen={showAboutModal}
+        onClose={() => setShowAboutModal(false)}
+      />
     </header>
   );
 }
