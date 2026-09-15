@@ -30,7 +30,6 @@ export function QrModal({
   onOpenInDecoder,
 }: QrModalProps) {
   const [copiedCode, setCopiedCode] = useState(false);
-  const [copiedFullRaw, setCopiedFullRaw] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   if (!isOpen || !qrCodeData) return null;
@@ -53,55 +52,25 @@ export function QrModal({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // Full raw base64 string (available as secondary option)
+  // Full raw base64 string fallback
   const fullBase64Code = isFile
     ? `QBSF:${bytesToBase64(rawPayload)}`
     : `QBSS:${bytesToBase64(rawPayload)}`;
 
-  // Download Full Standalone Code as .txt
-  const handleDownloadFullCodeTxt = () => {
-    const blob = new Blob([fullBase64Code], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const base = filename.replace(/\.[^/.]+$/, '');
-    a.download = `QBS-Code-${base}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setStatusMessage('Full offline code (.txt) downloaded successfully!');
-    setTimeout(() => setStatusMessage(null), 3000);
-  };
-
-  // Primary Copy: Copies the exact code that is inside the QR code (short reference or direct data)
+  // Single Copy Code: Copies the exact code of this QR (code string or direct data)
   const handleCopyCode = async () => {
     const codeToCopy = qrCodeText || fullBase64Code;
     const res = await copyTextToClipboard(codeToCopy);
     if (res.success) {
       setCopiedCode(true);
-      const preview = codeToCopy.length > 28 ? codeToCopy.slice(0, 25) + '...' : codeToCopy;
-      setStatusMessage(`Copied code (${preview}) to clipboard! Paste it directly into Decoder.`);
+      setStatusMessage('QR code copied to clipboard!');
     } else {
       setStatusMessage('Clipboard access restricted.');
     }
     setTimeout(() => {
       setCopiedCode(false);
       setStatusMessage(null);
-    }, 4000);
-  };
-
-  // Secondary Copy: Full raw offline Base64 string
-  const handleCopyFullRaw = async () => {
-    const res = await copyTextToClipboard(fullBase64Code);
-    if (res.success) {
-      setCopiedFullRaw(true);
-      setStatusMessage('Copied 100% standalone offline code (QBSF:...) to clipboard!');
-    }
-    setTimeout(() => {
-      setCopiedFullRaw(false);
-      setStatusMessage(null);
-    }, 3500);
+    }, 3000);
   };
 
   // Download QR PNG
@@ -177,29 +146,6 @@ export function QrModal({
             </div>
           </div>
 
-          {/* QR Code Content String Box with Quick Copy */}
-          {qrCodeText && (
-            <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2 text-left">
-              <div className="min-w-0 flex-1">
-                <span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                  QR Code Text ({qrCodeData.fitsQr ? 'Direct Data' : 'Short Reference'})
-                </span>
-                <span className="font-mono text-xs font-bold text-slate-900 truncate block select-all">
-                  {qrCodeText}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={handleCopyCode}
-                className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition-colors shadow-2xs"
-                title="Copy QR code text"
-              >
-                {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedCode ? 'Copied' : 'Copy'}</span>
-              </button>
-            </div>
-          )}
-
           {/* Payload Size & Safety Info */}
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-left space-y-1.5">
             <div className="flex items-center justify-between text-xs">
@@ -233,12 +179,12 @@ export function QrModal({
               <span>Download QR (.PNG)</span>
             </button>
 
-            {/* Copy Short QR Code */}
+            {/* Copy QR Code */}
             <button
               type="button"
               onClick={handleCopyCode}
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors border border-slate-300"
-              title="Copies the exact short code contained in the QR code"
+              title="Copy code to clipboard"
             >
               {copiedCode ? (
                 <>
@@ -253,42 +199,6 @@ export function QrModal({
               )}
             </button>
           </div>
-
-          {/* Secondary Full Raw Copy & Download (if large file) */}
-          {!qrCodeData.fitsQr && (
-            <div className="pt-2 p-3 bg-blue-50/70 border border-blue-200/70 rounded-xl space-y-2 text-left">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-blue-950">
-                  Worldwide 100% Offline Access
-                </span>
-                <span className="text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-mono font-semibold">
-                  Zero Server Required
-                </span>
-              </div>
-              <p className="text-[11px] text-blue-900/90 leading-relaxed">
-                If the recipient device is not synced, send the <strong>Sound (.wav) file</strong> or copy/download the <strong>Full Offline Code</strong> below. It opens on any device anywhere in the world!
-              </p>
-              <div className="flex items-center gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={handleCopyFullRaw}
-                  className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-blue-300 hover:bg-blue-100 text-blue-900 text-xs font-semibold shadow-2xs transition-colors"
-                >
-                  <Copy className="w-3.5 h-3.5 text-blue-700" />
-                  <span>{copiedFullRaw ? 'Copied Full Code!' : 'Copy Full Code'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadFullCodeTxt}
-                  className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-blue-300 hover:bg-blue-100 text-blue-900 text-xs font-semibold shadow-2xs transition-colors"
-                  title="Download offline code as .txt file"
-                >
-                  <Download className="w-3.5 h-3.5 text-blue-700" />
-                  <span>.txt File</span>
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* Test in Decoder Option */}
           {onOpenInDecoder && (

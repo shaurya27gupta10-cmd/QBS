@@ -123,8 +123,9 @@ export default defineConfig(() => {
       },
     },
     server: {
-      // Disable HMR to eliminate WebSocket connection error banners in sandboxed iframe environment
-      hmr: false,
+      // Disable HMR and WebSocket server to eliminate WebSocket connection errors in sandboxed iframe
+      hmr: false as const,
+      ws: false as const,
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };
