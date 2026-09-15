@@ -247,7 +247,7 @@ export async function resolveQrPayload(input: string): Promise<Uint8Array> {
       }
     }
     throw new Error(
-      `Reference code "${trimmed}" was not found or expired. Please ensure the generating device is connected to sync, or send the Sound (.wav) file.`
+      `Reference code "${trimmed}" was not found on the server. If this was generated on another device, please ensure the generating device is connected to sync, or copy the Full Offline Code (QBSF:...), or use the Sound (.wav) file.`
     );
   }
   return parseAndNormalizeQrPayload(trimmed);

@@ -70,7 +70,7 @@ export async function createPayloadId(payload: Uint8Array): Promise<string> {
 }
 
 /**
- * Save an encrypted payload into IndexedDB, memory cache, and server relay.
+ * Save an encrypted payload into IndexedDB, memory cache, localStorage, and server relay.
  * Returns the short reference ID.
  */
 export async function savePayloadToStore(
@@ -78,25 +78,36 @@ export async function savePayloadToStore(
   filename?: string
 ): Promise<string> {
   const id = await createPayloadId(payload);
+  const cleanId = id.trim().toLowerCase();
 
   // 1. In-memory cache
-  memoryCache.set(id, payload);
+  memoryCache.set(cleanId, payload);
 
   // 2. Broadcast to other tabs
   try {
-    broadcastChannel?.postMessage({ id, payload: Array.from(payload) });
+    broadcastChannel?.postMessage({ id: cleanId, payload: Array.from(payload) });
   } catch {
     // Ignore broadcast errors
   }
 
-  // 3. Persist to IndexedDB
+  // 3. LocalStorage immediate fast cache (if payload is reasonable size)
+  const b64 = bytesToBase64(payload);
+  try {
+    if (typeof window !== 'undefined' && window.localStorage && b64.length < 2500000) {
+      window.localStorage.setItem(`qbs_payload_${cleanId}`, b64);
+    }
+  } catch {
+    // LocalStorage quota or restricted
+  }
+
+  // 4. Persist to IndexedDB
   try {
     const db = await openPayloadDb();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       const req = store.put({
-        id,
+        id: cleanId,
         payload,
         filename: filename || 'file',
         sizeBytes: payload.length,
@@ -109,23 +120,26 @@ export async function savePayloadToStore(
     console.warn('Failed to persist payload to IndexedDB:', err);
   }
 
-  // 4. Background server relay sync for instant cross-device resolution (phone to phone, PC to phone)
+  // 5. Server relay sync for cross-device resolution (phone to phone, PC to phone)
   try {
     if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
-      const b64 = bytesToBase64(payload);
-      fetch('/api/payload', {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      await fetch('/api/payload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, payload: b64, filename: filename || 'file' }),
-      }).catch(() => {
-        // Non-blocking if server endpoint is unavailable
+        body: JSON.stringify({ id: cleanId, payload: b64, filename: filename || 'file' }),
+        signal: controller.signal,
+      }).catch((fetchErr) => {
+        console.warn('Server sync warning:', fetchErr);
       });
+      clearTimeout(timeoutId);
     }
   } catch {
-    // Ignore fetch error
+    // Non-blocking
   }
 
-  return id;
+  return cleanId;
 }
 
 /**
@@ -137,7 +151,7 @@ export function getMemoryPayload(id: string): Uint8Array | null {
 }
 
 /**
- * Retrieve a payload by its reference ID from memory cache, IndexedDB, or server relay.
+ * Retrieve a payload by its reference ID from memory cache, localStorage, IndexedDB, or server relay.
  */
 export async function getPayloadFromStore(id: string): Promise<Uint8Array | null> {
   const cleanId = id.trim().toLowerCase();
@@ -147,7 +161,21 @@ export async function getPayloadFromStore(id: string): Promise<Uint8Array | null
     return memoryCache.get(cleanId)!;
   }
 
-  // 2. Query IndexedDB
+  // 2. Check localStorage fast cache
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const localStr = window.localStorage.getItem(`qbs_payload_${cleanId}`);
+      if (localStr) {
+        const arr = base64ToBytes(localStr);
+        memoryCache.set(cleanId, arr);
+        return arr;
+      }
+    }
+  } catch {
+    // Ignore localStorage error
+  }
+
+  // 3. Query IndexedDB
   try {
     const db = await openPayloadDb();
     const local = await new Promise<Uint8Array | null>((resolve) => {
@@ -170,51 +198,65 @@ export async function getPayloadFromStore(id: string): Promise<Uint8Array | null
     // Continue to server fetch
   }
 
-  // 3. Query server endpoint for cross-device retrieval (e.g. scanned from another phone or Google Lens)
-  try {
-    if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
-      const res = await fetch(`/api/payload?id=${encodeURIComponent(cleanId)}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.payload) {
-          const arr = base64ToBytes(data.payload);
-          memoryCache.set(cleanId, arr);
-          // Persist to local IndexedDB for offline access
-          try {
-            const db = await openPayloadDb();
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            tx.objectStore(STORE_NAME).put({
-              id: cleanId,
-              payload: arr,
-              filename: data.filename || 'file',
-              sizeBytes: arr.length,
-              timestamp: Date.now(),
-            });
-          } catch {
-            // Ignore storage cache failure
+  // 4. Query server endpoint for cross-device retrieval (e.g. scanned from another phone or Google Lens)
+  const fetchFromServer = async (): Promise<Uint8Array | null> => {
+    try {
+      if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
+        const url = `/api/payload?id=${encodeURIComponent(cleanId)}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.payload) {
+            const arr = base64ToBytes(data.payload);
+            memoryCache.set(cleanId, arr);
+            // Cache locally for offline access
+            try {
+              if (window.localStorage && data.payload.length < 2500000) {
+                window.localStorage.setItem(`qbs_payload_${cleanId}`, data.payload);
+              }
+              const db = await openPayloadDb();
+              const tx = db.transaction(STORE_NAME, 'readwrite');
+              tx.objectStore(STORE_NAME).put({
+                id: cleanId,
+                payload: arr,
+                filename: data.filename || 'file',
+                sizeBytes: arr.length,
+                timestamp: Date.now(),
+              });
+            } catch {
+              // Ignore cache write error
+            }
+            return arr;
           }
-          return arr;
         }
       }
+    } catch {
+      // Fetch error
     }
-  } catch {
-    // Network / offline
+    return null;
+  };
+
+  // Attempt server fetch with 1 retry for mobile networks
+  let serverResult = await fetchFromServer();
+  if (!serverResult) {
+    await new Promise((r) => setTimeout(r, 600));
+    serverResult = await fetchFromServer();
   }
 
-  return null;
+  return serverResult;
 }
 
 /**
  * Check if a raw string is a reference code (e.g. QBSF:REF:a1b2c3d4 or QBSF : REF : a1b2c3d4).
  */
 export function isPayloadReferenceCode(input: string): boolean {
-  return /(?:QBSF|QBSS|QBS)\s*:\s*REF\s*:\s*([a-f0-9_-]+)/i.test(input.trim());
+  return /(?:QBSF|QBSS|QBS1|QBS2|QBS)\s*:\s*REF\s*:\s*([a-f0-9_-]+)/i.test(input.trim());
 }
 
 /**
  * Extract the reference ID from a reference code string.
  */
 export function extractPayloadReferenceId(input: string): string | null {
-  const match = input.trim().match(/(?:QBSF|QBSS|QBS)\s*:\s*REF\s*:\s*([a-f0-9_-]+)/i);
-  return match ? match[1].toLowerCase() : null;
+  const match = input.trim().match(/(?:QBSF|QBSS|QBS1|QBS2|QBS)\s*:\s*REF\s*:\s*([a-f0-9_-]+)/i);
+  return match ? match[1].toLowerCase().trim() : null;
 }
