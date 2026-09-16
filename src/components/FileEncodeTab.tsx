@@ -3,35 +3,45 @@ import {
   FolderLock, Upload, Image, Video, Music, FileText, 
   File as FileIcon, Eye, EyeOff, Play, Pause, Download, Share2, 
   RotateCcw, QrCode, AlertCircle, CheckCircle2, 
-  FlaskConical, Check, X, ShieldCheck, AlertTriangle, Copy, ExternalLink 
+  FlaskConical, Check, X, ShieldCheck, AlertTriangle, Copy, ExternalLink,
+  HardDrive, Cpu, Sliders, CheckCircle, Ban
 } from 'lucide-react';
 import { FileCategory, GeneratedSound, QrCodeData } from '../types';
 import { encryptFile, inspectPayloadInfo, decryptFilePayload, bytesToBase64 } from '../lib/crypto';
 import { synthesizeFskPcm, buildWavFile, generateFilename, extractPayloadFromWav } from '../lib/audioCodec';
 import { generateEncryptedQrCode } from '../lib/qr';
+import { 
+  encryptFileStream, 
+  DEFAULT_CHUNK_SIZE, 
+  MIN_CHUNK_SIZE, 
+  MAX_CHUNK_SIZE, 
+  isFileSystemAccessSupported, 
+  StreamEncryptResult 
+} from '../lib/streamingCrypto';
 import { AudioVisualizer } from './AudioVisualizer';
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
 import { ShareModal } from './ShareModal';
 import { QrModal } from './QrModal';
 
 interface FileEncodeTabProps {
-  onTestDecode: (blob: Blob, filename: string, payload: Uint8Array, password?: string) => void;
+  onTestDecode: (blob: Blob, filename: string, payload?: Uint8Array, password?: string) => void;
 }
 
-// Limits
-const WARN_THRESHOLD_BYTES = 2.5 * 1024 * 1024; // 2.5 MB warning
-const MAX_BROWSER_BYTES = 25 * 1024 * 1024;     // 25 MB max in-browser
+// Small audio threshold for FSK modulation (files above this use high-performance streaming QBS container)
+const MAX_AUDIO_SOUND_BYTES = 5 * 1024 * 1024; // 5 MB
 
 export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [fileBytes, setFileBytes] = useState<Uint8Array | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [activeCategory, setActiveCategory] = useState<FileCategory>('all');
 
-  // Warning state for large files
-  const [showLargeFileWarning, setShowLargeFileWarning] = useState(false);
-  const [acknowledgedWarning, setAcknowledgedWarning] = useState(false);
+  // Encryption mode: 'stream_qbs' (high-performance chunked QBS file) or 'sound_wav' (carrier audio sound)
+  const [encryptionMode, setEncryptionMode] = useState<'stream_qbs' | 'sound_wav'>('stream_qbs');
+
+  // Chunk configuration (Default 16 MB as requested)
+  const [chunkSize, setChunkSize] = useState<number>(DEFAULT_CHUNK_SIZE);
+  const [saveDirectToDisk, setSaveDirectToDisk] = useState<boolean>(true);
 
   // Password state
   const [password, setPassword] = useState('');
@@ -39,14 +49,23 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  // Generation & Progress State
+  // Processing & Progress State
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressStep, setProgressStep] = useState<string>('');
   const [progressPercent, setProgressPercent] = useState<number>(0);
+  const [processedBytes, setProcessedBytes] = useState<number>(0);
+  const [totalBytes, setTotalBytes] = useState<number>(0);
+  const [chunkStatus, setChunkStatus] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
 
-  // Result Sound State
+  // Cancellation Controller
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Results
+  const [streamResult, setStreamResult] = useState<StreamEncryptResult | null>(null);
   const [generatedSound, setGeneratedSound] = useState<GeneratedSound | null>(null);
+
+  // Audio Player State (when in sound_wav mode)
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [soundDuration, setSoundDuration] = useState(0);
@@ -55,7 +74,6 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
   // QR Code & Share State
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [copiedQrCode, setCopiedQrCode] = useState(false);
   const [qrCodeData, setQrCodeData] = useState<QrCodeData | null>(null);
 
   // In-browser byte-for-byte verification test
@@ -74,9 +92,9 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
 
   // Format bytes helper
   const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
+    if (!bytes || bytes === 0) return '0 Bytes';
     const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
@@ -97,38 +115,31 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
     }
   };
 
-  // Handle incoming file selection
-  const processSelectedFile = async (selectedFile: File) => {
+  // Handle incoming file selection (Zero memory duplication: does not read whole buffer into state)
+  const processSelectedFile = (selectedFile: File) => {
     setError(null);
     setTestResult({ status: 'idle' });
+    setStreamResult(null);
     setGeneratedSound(null);
-    setAcknowledgedWarning(false);
-    setShowLargeFileWarning(false);
-
-    // Hard limit check
-    if (selectedFile.size > MAX_BROWSER_BYTES) {
-      setError('This file is too large for browser-only processing. Please choose a smaller file (under 25 MB).');
-      return;
-    }
-
-    // Large file advisory
-    if (selectedFile.size > WARN_THRESHOLD_BYTES) {
-      setShowLargeFileWarning(true);
-    }
+    setProgressPercent(0);
+    setProcessedBytes(0);
+    setTotalBytes(selectedFile.size);
 
     setFile(selectedFile);
 
-    // Create safe preview
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    const newPreviewUrl = URL.createObjectURL(selectedFile);
-    setPreviewUrl(newPreviewUrl);
+    // If file is large (> 5 MB), enforce streaming QBS container mode
+    if (selectedFile.size > MAX_AUDIO_SOUND_BYTES) {
+      setEncryptionMode('stream_qbs');
+    }
 
-    // Read file bytes
-    try {
-      const buffer = await selectedFile.arrayBuffer();
-      setFileBytes(new Uint8Array(buffer));
-    } catch (err) {
-      setError('Unable to read selected file into memory.');
+    // Only create object URL for small media files (< 25 MB) to avoid browser video engine OOM
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+    }
+    if (selectedFile.size <= 25 * 1024 * 1024 && (selectedFile.type.startsWith('image/') || selectedFile.type.startsWith('audio/'))) {
+      const newPreviewUrl = URL.createObjectURL(selectedFile);
+      setPreviewUrl(newPreviewUrl);
     }
   };
 
@@ -145,7 +156,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
     };
   }, []);
 
-  // Robust Drag & drop handlers
+  // Drag & drop handlers
   const dragCounterRef = useRef(0);
 
   const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
@@ -210,7 +221,6 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
     e.target.value = '';
   };
 
-  // Trigger file picker with chosen category
   const openFilePicker = (category: FileCategory) => {
     setActiveCategory(category);
     const input = document.getElementById('file-picker-input') as HTMLInputElement;
@@ -256,12 +266,25 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
     }
   };
 
-  // Main File Encryption & Audio Generation
-  const handleGenerateSound = async () => {
+  // User Cancel Operation
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsProcessing(false);
+    setProgressStep('Encryption cancelled.');
+    setError('Operation cancelled by user.');
+  };
+
+  // Main Encryption Orchestrator
+  const handleStartEncryption = async () => {
     setError(null);
     setTestResult({ status: 'idle' });
+    setStreamResult(null);
+    setGeneratedSound(null);
 
-    if (!file || !fileBytes) {
+    if (!file) {
       setError('Please select a file to encrypt first.');
       return;
     }
@@ -282,153 +305,183 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
     }
 
     setIsProcessing(true);
-    setProgressPercent(5);
-    setProgressStep('Reading file...');
+    setProgressPercent(0);
+    setProcessedBytes(0);
+    setTotalBytes(file.size);
 
-    try {
-      await new Promise((r) => setTimeout(r, 120));
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
-      // 1. Encrypt file into QBSF container
-      setProgressPercent(25);
-      setProgressStep('Encrypting file with AES-256-GCM...');
+    // Check if we should execute Streaming QBS Encryption or Carrier Sound
+    if (encryptionMode === 'stream_qbs' || file.size > MAX_AUDIO_SOUND_BYTES) {
+      try {
+        let writable: FileSystemWritableFileStream | undefined;
 
-      const payload = await encryptFile(
-        fileBytes,
-        file.name,
-        file.type || 'application/octet-stream',
-        password,
-        (step, pct) => {
-          setProgressStep(step);
-          // Scale pct between 25 and 65
-          setProgressPercent(Math.floor(25 + (pct / 100) * 40));
+        // If File System Access API is supported and selected, prompt user to select destination file
+        if (saveDirectToDisk && isFileSystemAccessSupported()) {
+          try {
+            setProgressStep('Selecting destination on disk...');
+            const handle = await (window as unknown as { 
+              showSaveFilePicker: (options: unknown) => Promise<FileSystemFileHandle> 
+            }).showSaveFilePicker({
+              suggestedName: `${file.name}.qbs`,
+              types: [
+                {
+                  description: 'QBS Secure Encrypted Container',
+                  accept: { 'application/octet-stream': ['.qbs'] },
+                },
+              ],
+            });
+            writable = await handle.createWritable();
+          } catch (pickerErr: unknown) {
+            // User closed the file save picker dialog without choosing
+            if (pickerErr instanceof DOMException && pickerErr.name === 'AbortError') {
+              setIsProcessing(false);
+              return;
+            }
+            // If picker failed for permissions, continue with compatible in-browser blob fallback
+            console.warn('File System Access picker fell back:', pickerErr);
+          }
         }
-      );
 
-      // 2. Synthesize audio
-      setProgressPercent(75);
-      setProgressStep('Encoding secure sound...');
-      await new Promise((r) => setTimeout(r, 150));
-
-      const { pcmSamples, durationSeconds } = synthesizeFskPcm(payload);
-
-      // 3. Build RIFF/WAV file containing exact payload in 'qbsd' chunk
-      setProgressPercent(90);
-      setProgressStep('Finalizing lossless WAV container...');
-      const wavBlob = buildWavFile(pcmSamples, payload);
-      const url = URL.createObjectURL(wavBlob);
-      const filename = generateFilename(new Date(), 'wav');
-
-      // Create audio buffer for visualizer
-      const audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-      const arrayBuffer = await wavBlob.arrayBuffer();
-      const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-
-      // Generate QR Code if applicable
-      const qrRes = await generateEncryptedQrCode(payload, file.name);
-      setQrCodeData({
-        dataUrl: qrRes.dataUrl || '',
-        isSelfContained: qrRes.fitsQr,
-        fitsQr: qrRes.fitsQr,
-        payloadSize: payload.length,
-        warning: qrRes.warning,
-        qrPayloadString: qrRes.qrPayloadString,
-        isMultiPart: qrRes.isMultiPart,
-        frameCount: qrRes.frameCount,
-        frames: qrRes.frames,
-      });
-
-      const soundResult: GeneratedSound = {
-        blob: wavBlob,
-        url,
-        filename,
-        durationSeconds,
-        payloadSizeBytes: payload.length,
-        audioBuffer: decodedBuffer,
-        rawPayload: payload,
-        timestamp: Date.now(),
-        payloadType: 'file',
-        kdfType: 'argon2id',
-        isCompressed: true,
-        fileMetadata: {
-          originalName: file.name,
+        const result = await encryptFileStream({
+          file,
+          filename: file.name,
           mimeType: file.type || 'application/octet-stream',
-          originalSizeBytes: file.size,
-        },
-      };
+          password,
+          chunkSize,
+          signal: abortController.signal,
+          writable,
+          onProgress: (prog) => {
+            setProgressPercent(prog.percent);
+            setProcessedBytes(prog.processedBytes);
+            setTotalBytes(prog.totalBytes);
+            setProgressStep(prog.step);
+            setChunkStatus({ current: prog.currentChunk, total: prog.totalChunks });
+          },
+        });
 
-      setGeneratedSound(soundResult);
-      setProgressPercent(100);
-      setProgressStep('Complete');
-    } catch (err: unknown) {
-      console.error(err);
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('An unexpected error occurred while encrypting the file.');
+        setStreamResult(result);
+        setProgressPercent(100);
+        setProgressStep('Encryption complete.');
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          setError('Encryption cancelled by user.');
+        } else if (err instanceof Error) {
+          if (err.message.includes('Quota') || err.message.includes('allocation') || err.message.includes('out of memory')) {
+            setError('Insufficient memory. Try using a smaller chunk size (e.g. 8 MB) or choose Direct to Disk.');
+          } else {
+            setError(err.message);
+          }
+        } else {
+          setError('An unexpected error occurred during streaming encryption.');
+        }
+      } finally {
+        setIsProcessing(false);
+        abortControllerRef.current = null;
       }
-    } finally {
-      setIsProcessing(false);
+    } else {
+      // Small file: Carrier Audio Sound Mode (.wav)
+      try {
+        setProgressStep('Reading file slice for audio modulation...');
+        setProgressPercent(10);
+
+        const sliceBuffer = await file.arrayBuffer();
+        const fileBytes = new Uint8Array(sliceBuffer);
+
+        setProgressStep('Encrypting file with AES-256-GCM...');
+        setProgressPercent(30);
+
+        const payload = await encryptFile(
+          fileBytes,
+          file.name,
+          file.type || 'application/octet-stream',
+          password,
+          (step, pct) => {
+            setProgressStep(step);
+            setProgressPercent(Math.floor(25 + (pct / 100) * 40));
+          }
+        );
+
+        setProgressPercent(75);
+        setProgressStep('Synthesizing FSK audio carrier...');
+        await new Promise((r) => setTimeout(r, 60));
+
+        const { pcmSamples, durationSeconds } = synthesizeFskPcm(payload);
+
+        setProgressPercent(90);
+        setProgressStep('Finalizing lossless WAV container...');
+        const wavBlob = buildWavFile(pcmSamples, payload);
+        const url = URL.createObjectURL(wavBlob);
+        const filename = generateFilename(new Date(), 'wav');
+
+        const audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        const arrayBuffer = await wavBlob.arrayBuffer();
+        const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+        const qrRes = await generateEncryptedQrCode(payload, file.name);
+        setQrCodeData({
+          dataUrl: qrRes.dataUrl || '',
+          isSelfContained: qrRes.fitsQr,
+          fitsQr: qrRes.fitsQr,
+          payloadSize: payload.length,
+          warning: qrRes.warning,
+          qrPayloadString: qrRes.qrPayloadString,
+          isMultiPart: qrRes.isMultiPart,
+          frameCount: qrRes.frameCount,
+          frames: qrRes.frames,
+        });
+
+        const soundResult: GeneratedSound = {
+          blob: wavBlob,
+          url,
+          filename,
+          durationSeconds,
+          payloadSizeBytes: payload.length,
+          audioBuffer: decodedBuffer,
+          rawPayload: payload,
+          timestamp: Date.now(),
+          payloadType: 'file',
+          kdfType: 'argon2id',
+          isCompressed: true,
+          fileMetadata: {
+            originalName: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            originalSizeBytes: file.size,
+          },
+        };
+
+        setGeneratedSound(soundResult);
+        setProgressPercent(100);
+        setProgressStep('Sound ready');
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          setError(err.message);
+        } else {
+          setError('Failed to generate secure sound file.');
+        }
+      } finally {
+        setIsProcessing(false);
+        abortControllerRef.current = null;
+      }
     }
   };
 
-  // Test Decode In-Memory with Byte-for-Byte Comparison
-  const handleRunCompatibilityTest = async () => {
-    if (!generatedSound || !fileBytes || !password) return;
-
-    setTestResult({ status: 'verifying', message: 'Testing audio demodulation & file recovery...' });
-
-    try {
-      // Step 1: Read arrayBuffer from generated WAV blob
-      const arrayBuffer = await generatedSound.blob.arrayBuffer();
-
-      // Step 2: Extract payload from RIFF WAV container
-      const extractedPayload = extractPayloadFromWav(arrayBuffer);
-
-      // Step 3: Decrypt file payload
-      const decryptedResult = await decryptFilePayload(extractedPayload, password);
-
-      // Step 4: Byte-by-byte comparison
-      if (decryptedResult.data.length !== fileBytes.length) {
-        setTestResult({
-          status: 'failed',
-          message: `✕ Verification failed: Decrypted size (${decryptedResult.data.length} bytes) does not match original size (${fileBytes.length} bytes).`,
-        });
-        return;
-      }
-
-      let match = true;
-      for (let i = 0; i < fileBytes.length; i++) {
-        if (decryptedResult.data[i] !== fileBytes[i]) {
-          match = false;
-          break;
-        }
-      }
-
-      if (match) {
-        setTestResult({
-          status: 'success',
-          message: `✓ File integrity verified: Decrypted ${decryptedResult.filename} (${formatBytes(decryptedResult.sizeBytes)}) matches original file byte-for-byte.`,
-        });
-      } else {
-        setTestResult({
-          status: 'failed',
-          message: '✕ Verification failed: Decrypted byte stream differs from original file.',
-        });
-      }
-
-      // Revoke temporary test URL
-      URL.revokeObjectURL(decryptedResult.objectUrl);
-    } catch (testErr: unknown) {
-      console.warn('Verification notice:', testErr instanceof Error ? testErr.message : testErr);
-      setTestResult({
-        status: 'failed',
-        message: testErr instanceof Error ? testErr.message : '✕ Verification failed during playback demodulation.',
-      });
-    }
+  // Download Streamed QBS File
+  const handleDownloadStreamQbs = () => {
+    if (!streamResult?.blob) return;
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(streamResult.blob);
+    a.href = url;
+    a.download = streamResult.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
   // Download Sound File
-  const handleDownload = () => {
+  const handleDownloadSound = () => {
     if (!generatedSound) return;
     const a = document.createElement('a');
     a.href = generatedSound.url;
@@ -438,48 +491,25 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
     document.body.removeChild(a);
   };
 
-  // Share Sound
-  const handleShare = async () => {
-    if (!generatedSound) return;
-    try {
-      const shareFile = new File([generatedSound.blob], generatedSound.filename, {
-        type: 'audio/wav',
-      });
-      if (navigator.canShare && navigator.canShare({ files: [shareFile] })) {
-        await navigator.share({
-          files: [shareFile],
-          title: 'QBS Secure Sound',
-          text: `Encrypted file sound (${file?.name}): Play or decode with QBS Secure Sound.`,
-        });
-      } else {
-        handleDownload();
-      }
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        handleDownload();
-      }
-    }
-  };
-
   // Reset form
   const handleReset = () => {
     if (generatedSound?.url) URL.revokeObjectURL(generatedSound.url);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(null);
-    setFileBytes(null);
     setPreviewUrl(null);
+    setStreamResult(null);
     setGeneratedSound(null);
     setPassword('');
     setConfirmPassword('');
     setError(null);
+    setProgressPercent(0);
+    setProcessedBytes(0);
+    setTotalBytes(0);
     setTestResult({ status: 'idle' });
-    setShowLargeFileWarning(false);
   };
 
-  // Estimate calculations
   const originalSize = file ? file.size : 0;
-  const estimatedPayloadSize = originalSize + 120; // 120 bytes container overhead
-  const estimatedSoundSize = Math.max(originalSize + 300000, 320000); // WAV header + FSK audio + payload chunk
+  const isLargeFile = originalSize > MAX_AUDIO_SOUND_BYTES;
 
   return (
     <div className="space-y-6">
@@ -529,8 +559,8 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
                   <span>Choose File</span>
                 </button>
               </div>
-              <p className="text-xs text-slate-500 pt-2">
-                Images, Videos, Audio, PDF, Documents &amp; Binaries &bull; Up to 25 MB
+              <p className="text-xs text-slate-500 pt-2 flex items-center gap-1.5 justify-center flex-wrap">
+                <span>Any size supported &bull; Scalable up to 5 GB+ with 16 MB Chunked Streaming</span>
               </p>
             </div>
           </div>
@@ -576,12 +606,12 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-700 text-slate-700 text-xs font-medium transition-colors"
             >
               <FileIcon className="w-3.5 h-3.5 text-blue-600" />
-              <span>📁 Other</span>
+              <span>📁 Other / ISO / Zip</span>
             </button>
           </div>
         </div>
       ) : (
-        /* Selected File Card & Previews */
+        /* Selected File Card */
         <div
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
@@ -595,9 +625,9 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
             <div className="absolute inset-0 bg-blue-50/90 border-2 border-blue-500 border-dashed rounded-2xl z-10 flex flex-col items-center justify-center pointer-events-none p-4 text-center">
               <Upload className="w-8 h-8 text-blue-600 animate-bounce mb-2" />
               <p className="text-sm font-bold text-blue-900">Drop new file to replace selection</p>
-              <p className="text-xs text-blue-600">Supports images, videos, audio, documents and binaries</p>
             </div>
           )}
+
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-start gap-3.5 overflow-hidden">
               <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 flex-shrink-0 mt-0.5">
@@ -620,7 +650,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
                 <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-0.5">
                   <span className="font-semibold text-slate-700">{formatBytes(file.size)}</span>
                   <span>&bull;</span>
-                  <span className="truncate">{file.type || 'Binary / Data'}</span>
+                  <span className="truncate">{file.type || 'Binary Stream'}</span>
                 </div>
               </div>
             </div>
@@ -628,14 +658,15 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
             <button
               type="button"
               onClick={handleReset}
-              className="text-xs font-semibold text-slate-500 hover:text-red-600 p-1 rounded-md transition-colors"
+              disabled={isProcessing}
+              className="text-xs font-semibold text-slate-500 hover:text-red-600 p-1 rounded-md transition-colors disabled:opacity-40"
               title="Remove selected file"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
-          {/* Type-Specific Preview */}
+          {/* Type-Specific Preview (for small images/audio) */}
           {previewUrl && (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 overflow-hidden">
               {file.type.startsWith('image/') ? (
@@ -646,71 +677,108 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
                     className="max-h-56 object-contain rounded-lg shadow-2xs"
                   />
                 </div>
-              ) : file.type.startsWith('video/') ? (
-                <video
-                  src={previewUrl}
-                  controls
-                  className="w-full max-h-60 rounded-lg bg-black"
-                />
               ) : file.type.startsWith('audio/') ? (
                 <audio
                   src={previewUrl}
                   controls
                   className="w-full mt-1"
                 />
-              ) : (
-                <div className="flex items-center gap-3 py-2 px-3 bg-white rounded-lg border border-slate-200 text-xs text-slate-600">
-                  <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
-                  <span className="truncate">Document ready for client-side encryption.</span>
-                </div>
-              )}
+              ) : null}
             </div>
           )}
 
-          {/* Size Calculation & Warning */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2 text-xs">
-            <div className="font-semibold text-slate-800">Estimated Dimensions:</div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-slate-600">
-              <div className="bg-white p-2 rounded-lg border border-slate-200">
-                <span className="text-slate-400 block text-[10px]">Original File:</span>
-                <span className="font-bold text-slate-900">{formatBytes(originalSize)}</span>
-              </div>
-              <div className="bg-white p-2 rounded-lg border border-slate-200">
-                <span className="text-slate-400 block text-[10px]">Encrypted Payload:</span>
-                <span className="font-bold text-slate-900">{formatBytes(estimatedPayloadSize)}</span>
-              </div>
-              <div className="bg-white p-2 rounded-lg border border-slate-200">
-                <span className="text-slate-400 block text-[10px]">Estimated QBS Sound:</span>
-                <span className="font-bold text-blue-700">{formatBytes(estimatedSoundSize)}</span>
-              </div>
+          {/* Engine & Mode Selection */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-slate-800 flex items-center gap-1.5">
+                <Cpu className="w-4 h-4 text-blue-600" />
+                <span>Encryption Engine &amp; Container</span>
+              </span>
+              {isLargeFile && (
+                <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-semibold text-[10px]">
+                  Large File Optimized
+                </span>
+              )}
             </div>
 
-            {/* Warning for large files */}
-            {showLargeFileWarning && !acknowledgedWarning && (
-              <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 space-y-2">
-                <div className="flex items-center gap-2 font-semibold text-xs">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                  <span>Large file detected ({formatBytes(file.size)})</span>
+            {/* Mode selection if small file */}
+            {!isLargeFile ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEncryptionMode('stream_qbs')}
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
+                    encryptionMode === 'stream_qbs'
+                      ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <div className="font-bold text-xs">Encrypted QBS File (.qbs)</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">High-speed chunked AES-GCM stream.</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setEncryptionMode('sound_wav')}
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
+                    encryptionMode === 'sound_wav'
+                      ? 'bg-blue-50 border-blue-400 text-blue-900 shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <div className="font-bold text-xs">QBS Secure Sound (.wav)</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">Carrier sound modulated at 44.1 kHz.</div>
+                </button>
+              </div>
+            ) : (
+              <div className="p-3 bg-blue-50/60 border border-blue-200 rounded-lg text-blue-900 text-xs space-y-1">
+                <div className="font-semibold flex items-center gap-1.5">
+                  <CheckCircle className="w-4 h-4 text-blue-600" />
+                  <span>Streaming Engine Activated for {formatBytes(file.size)}</span>
                 </div>
-                <p className="text-xs text-amber-800 leading-relaxed">
-                  Encoding this file into a sound may create a larger audio file. QBS Sound is best suited for small/medium files.
+                <p className="text-slate-600 leading-relaxed text-[11px]">
+                  Files above 5 MB are processed in streaming chunks. The browser only keeps one 16 MB chunk in RAM at a time, eliminating crashes on 1 GB, 2 GB, and 5 GB+ files.
                 </p>
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setAcknowledgedWarning(true)}
-                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs transition-colors"
+              </div>
+            )}
+
+            {/* Configurable Chunk Size & Direct Disk Option */}
+            {(encryptionMode === 'stream_qbs' || isLargeFile) && (
+              <div className="pt-1 border-t border-slate-200/80 space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <label htmlFor="chunk-size-select" className="text-slate-600 font-medium text-[11px] flex items-center gap-1">
+                    <Sliders className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Chunk Size:</span>
+                  </label>
+                  <select
+                    id="chunk-size-select"
+                    value={chunkSize}
+                    onChange={(e) => setChunkSize(Number(e.target.value))}
+                    disabled={isProcessing}
+                    className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-600"
                   >
-                    Continue
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleReset}
-                    className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-900 font-semibold text-xs hover:bg-amber-100 transition-colors"
-                  >
-                    Cancel
-                  </button>
+                    <option value={4 * 1024 * 1024}>4 MB (Lowest RAM / Mobile)</option>
+                    <option value={8 * 1024 * 1024}>8 MB (Mobile &amp; Tablets)</option>
+                    <option value={16 * 1024 * 1024}>16 MB (Recommended Default)</option>
+                    <option value={32 * 1024 * 1024}>32 MB (High Throughput Desktop)</option>
+                  </select>
                 </div>
+
+                {isFileSystemAccessSupported() && (
+                  <label className="flex items-center gap-2 cursor-pointer select-none text-[11px] text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={saveDirectToDisk}
+                      onChange={(e) => setSaveDirectToDisk(e.target.checked)}
+                      disabled={isProcessing}
+                      className="rounded text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="flex items-center gap-1 font-medium">
+                      <HardDrive className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Direct-to-Disk Stream (Streams straight to hard drive with 0 RAM buildup)</span>
+                    </span>
+                  </label>
+                )}
               </div>
             )}
           </div>
@@ -718,13 +786,13 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
       )}
 
       {/* Password Inputs (shown once file is selected) */}
-      {file && (
+      {file && !streamResult && !generatedSound && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 space-y-4 shadow-xs">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Password */}
             <div>
               <label htmlFor="file-password" className="block text-xs font-semibold text-slate-700 mb-1">
-                Password
+                Encryption Password
               </label>
               <div className="relative">
                 <input
@@ -790,37 +858,61 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
             }}
           />
 
-          {/* Generate Button & Progress */}
-          {!generatedSound && (
-            <div className="pt-2">
+          {/* Generate Button & Dynamic Progress */}
+          <div className="pt-2">
+            {!isProcessing ? (
               <button
                 id="file-generate-sound-btn"
                 type="button"
-                onClick={handleGenerateSound}
-                disabled={isProcessing || !file || !password || password !== confirmPassword}
+                onClick={handleStartEncryption}
+                disabled={!file || !password || password !== confirmPassword}
                 className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold text-base shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 min-h-[48px]"
               >
                 <FolderLock className="w-5 h-5" />
-                <span>Generate Secure Sound</span>
+                <span>
+                  {encryptionMode === 'sound_wav' && !isLargeFile 
+                    ? 'Generate Secure Sound (.wav)' 
+                    : `Encrypt File (${formatBytes(file.size)})`}
+                </span>
               </button>
-
-              {/* Progress Indicator */}
-              {isProcessing && (
-                <div className="mt-4 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
-                    <span>{progressStep}</span>
-                    <span className="text-blue-600">{progressPercent}%</span>
-                  </div>
-                  <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-out"
-                      style={{ width: `${progressPercent}%` }}
-                    />
-                  </div>
+            ) : (
+              /* Active Progress with Percentage, Processed Size, and Cancel Button */
+              <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-xl space-y-3">
+                <div className="flex items-center justify-between text-xs font-semibold text-slate-800">
+                  <span className="truncate pr-2">{progressStep}</span>
+                  <span className="text-blue-700 font-mono font-bold text-sm whitespace-nowrap">
+                    {progressPercent}%
+                  </span>
                 </div>
-              )}
-            </div>
-          )}
+
+                <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
+                  <div
+                    className="bg-blue-600 h-2.5 rounded-full transition-all duration-200 ease-out"
+                    style={{ width: `${Math.max(progressPercent, 2)}%` }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-slate-600 pt-0.5">
+                  <span className="font-mono">
+                    {formatBytes(processedBytes)} / {formatBytes(totalBytes)}
+                  </span>
+                  {chunkStatus.total > 0 && (
+                    <span className="text-slate-500">
+                      Chunk {chunkStatus.current} of {chunkStatus.total} ({formatBytes(chunkSize)}/chunk)
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-100 hover:bg-red-200 text-red-700 font-semibold text-xs transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Cancel</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -828,11 +920,84 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
       {error && (
         <div className="p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-800 text-xs sm:text-sm">
           <AlertCircle className="w-4 h-4 sm:w-5 sm:h-5 text-red-600 flex-shrink-0 mt-0.5" />
-          <p className="font-medium leading-relaxed">{error}</p>
+          <div className="space-y-1">
+            <p className="font-semibold">Encryption Notice</p>
+            <p className="leading-relaxed">{error}</p>
+          </div>
         </div>
       )}
 
-      {/* Generated Secure Sound Results */}
+      {/* Result Card: Streamed QBS File Result */}
+      {streamResult && (
+        <div className="bg-white rounded-2xl border border-blue-200 shadow-sm p-5 sm:p-7 space-y-6">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+            <div className="flex items-center gap-2 text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200 text-xs font-semibold">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <span>
+                {streamResult.isDirectToDisk 
+                  ? 'Saved Directly to Disk' 
+                  : 'QBS Encrypted Container Ready'}
+              </span>
+            </div>
+            <div className="text-xs text-slate-500 font-mono">
+              {formatBytes(streamResult.encryptedSizeBytes)}
+            </div>
+          </div>
+
+          {/* Specs */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+              <span className="text-slate-400 block text-[10px]">Original File</span>
+              <span className="font-bold text-slate-800 truncate block">{file?.name}</span>
+            </div>
+            <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+              <span className="text-slate-400 block text-[10px]">Original Size</span>
+              <span className="font-bold text-slate-800">{formatBytes(streamResult.originalSizeBytes)}</span>
+            </div>
+            <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+              <span className="text-slate-400 block text-[10px]">Cipher / Protocol</span>
+              <span className="font-bold text-blue-700">AES-256-GCM (Stream)</span>
+            </div>
+            <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+              <span className="text-slate-400 block text-[10px]">Authentication</span>
+              <span className="font-bold text-slate-800">Per-Chunk AEAD Tag</span>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            {!streamResult.isDirectToDisk && streamResult.blob && (
+              <button
+                onClick={handleDownloadStreamQbs}
+                className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs sm:text-sm shadow-xs transition-colors min-h-[44px]"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download Encrypted File ({streamResult.filename})</span>
+              </button>
+            )}
+
+            {streamResult.blob && (
+              <button
+                onClick={() => onTestDecode(streamResult.blob!, streamResult.filename, undefined, password)}
+                className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold text-xs sm:text-sm transition-colors min-h-[44px]"
+              >
+                <FlaskConical className="w-4 h-4" />
+                <span>🧪 Open in Decoder</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleReset}
+              className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs sm:text-sm transition-colors min-h-[44px]"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>Encrypt Another File</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Result Card: Carrier Sound WAV Result (for small files) */}
       {generatedSound && (
         <div className="bg-white rounded-2xl border border-blue-200 shadow-sm p-5 sm:p-7 space-y-6">
           <div className="flex items-center justify-between border-b border-slate-100 pb-4">
@@ -893,7 +1058,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
             />
           </div>
 
-          {/* File Information Specs */}
+          {/* Specs */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
             <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
               <span className="text-slate-400 block text-[10px]">Original File</span>
@@ -916,7 +1081,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
           {/* Action Buttons */}
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
-              onClick={handleDownload}
+              onClick={handleDownloadSound}
               className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs sm:text-sm shadow-xs transition-colors min-h-[44px]"
             >
               <Download className="w-4 h-4" />
@@ -941,38 +1106,15 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
             </button>
 
             <button
-              onClick={handleRunCompatibilityTest}
+              onClick={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password)}
               className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold text-xs sm:text-sm transition-colors min-h-[44px]"
             >
               <FlaskConical className="w-4 h-4" />
-              <span>🧪 Test Decode</span>
+              <span>🧪 Open in Decoder</span>
             </button>
           </div>
 
-          {/* Verification Test Result Banner */}
-          {testResult.status !== 'idle' && (
-            <div className={`p-4 rounded-xl border text-xs sm:text-sm font-medium ${
-              testResult.status === 'verifying'
-                ? 'bg-blue-50 border-blue-200 text-blue-800'
-                : testResult.status === 'success'
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                : 'bg-red-50 border-red-200 text-red-800'
-            }`}>
-              <div className="flex items-center justify-between gap-2">
-                <span>{testResult.message}</span>
-                {testResult.status === 'success' && (
-                  <button
-                    onClick={() => onTestDecode(generatedSound.blob, generatedSound.filename, generatedSound.rawPayload, password)}
-                    className="ml-2 text-xs font-bold text-emerald-900 underline hover:no-underline whitespace-nowrap"
-                  >
-                    Open in Decoder &rarr;
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Reset / Encode Another */}
+          {/* Reset */}
           <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
             <button
               onClick={handleReset}
@@ -988,7 +1130,7 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
         </div>
       )}
 
-      {/* QR Code Modal */}
+      {/* Modals for QR / Share */}
       {qrModalOpen && generatedSound && (
         <QrModal
           isOpen={qrModalOpen}
@@ -1003,7 +1145,6 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
         />
       )}
 
-      {/* Full Share & Export Modal */}
       {generatedSound && (
         <ShareModal
           isOpen={shareModalOpen}
@@ -1022,10 +1163,10 @@ export function FileEncodeTab({ onTestDecode }: FileEncodeTabProps) {
         />
       )}
 
-      {/* Security Statement */}
+      {/* Security Guarantee Notice */}
       <div className="p-4 rounded-xl bg-slate-100/60 border border-slate-200 flex items-center gap-3 text-xs text-slate-600">
         <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-        <span>Your file is encrypted locally before it is converted into QBS Secure Sound.</span>
+        <span>100% Client-Side Web Crypto AES-256-GCM &bull; No servers &bull; Zero memory bloat for files up to 5 GB+</span>
       </div>
     </div>
   );

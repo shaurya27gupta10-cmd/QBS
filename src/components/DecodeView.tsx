@@ -5,11 +5,12 @@ import {
   Sparkles, Check, ArrowRight, ShieldAlert, FolderLock, 
   MessageSquare, Image, Video, Music, FileText, File as FileIcon, 
   Share2, RotateCcw, ShieldCheck, CheckCheck, Camera, QrCode, 
-  ClipboardPaste, ImageIcon
+  ClipboardPaste, ImageIcon, X
 } from 'lucide-react';
 import { extractPayloadFromWav } from '../lib/audioCodec';
 import { decryptPayload, decryptFilePayload, base64ToBytes, bytesToBase64, inspectPayloadInfo, PayloadInfo } from '../lib/crypto';
 import { parseAndNormalizeQrPayload, resolveQrPayload, scanQrFromImage } from '../lib/qr';
+import { decryptFileStream, isFileSystemAccessSupported } from '../lib/streamingCrypto';
 import { QrScannerModal } from './QrScannerModal';
 import { AudioVisualizer } from './AudioVisualizer';
 import { DecryptedFileResult } from '../types';
@@ -45,7 +46,9 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
+  const [progressPercent, setProgressPercent] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Results
   const [decryptedMessage, setDecryptedMessage] = useState<string | null>(null);
@@ -143,17 +146,17 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
       }
     }
 
-    // 2. Read first bytes to inspect magic header
-    let buffer: ArrayBuffer;
+    // 2. Read first 64 KB slice to inspect magic header without memory exhaustion
+    let headerSlice: ArrayBuffer;
     try {
-      buffer = await file.arrayBuffer();
+      headerSlice = await file.slice(0, Math.min(65536, file.size)).arrayBuffer();
     } catch {
       setError('Failed to read selected file.');
       return;
     }
 
-    const byteLength = buffer.byteLength;
-    const headerBytes = new Uint8Array(buffer, 0, Math.min(16, byteLength));
+    const byteLength = headerSlice.byteLength;
+    const headerBytes = new Uint8Array(headerSlice, 0, Math.min(16, byteLength));
     const header4Str = String.fromCharCode(...headerBytes.slice(0, 4));
 
     // 2a. Check if it's a raw .qbs payload container or has QBS magic bytes
@@ -165,11 +168,22 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
 
     if (isQbsMagic) {
       try {
-        const raw = new Uint8Array(buffer);
-        setSourceMode('qr');
-        setQrText(`QBSS:${bytesToBase64(raw)}`);
-        analyzePayloadBytes(raw);
-        setQrStatusSuccess('Encrypted container loaded (.qbs)');
+        const info = inspectPayloadInfo(new Uint8Array(headerSlice));
+        setDetectedInfo(info);
+
+        setSelectedFile(file);
+        setFileBlob(file);
+        setFileName(name);
+        setFileSize(file.size);
+        setSourceMode('audio');
+
+        // Only convert to Base64 text if file is very small (< 256 KB) and is a simple message
+        if (file.size < 256 * 1024 && info.type === 'message') {
+          const raw = new Uint8Array(await file.arrayBuffer());
+          setQrText(`QBSS:${bytesToBase64(raw)}`);
+        }
+
+        setQrStatusSuccess(`Encrypted container loaded (${formatBytes(file.size)})`);
         setTimeout(() => setQrStatusSuccess(null), 3500);
         return;
       } catch {
@@ -200,20 +214,24 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
       }
     }
 
-    // 3. Audio & Container format check
-    // Test if extractPayloadFromWav can extract a payload directly
+    // 3. Audio & Container format check (only read full buffer for audio WAV files under 100 MB)
     let detectedPayload: Uint8Array | null = null;
     let extractError: string | null = null;
-    try {
-      detectedPayload = extractPayloadFromWav(buffer);
-    } catch (err: unknown) {
-      extractError = err instanceof Error ? err.message : String(err);
-    }
+    let buffer: ArrayBuffer | null = null;
 
     const isRiffHeader = header4Str === 'RIFF';
     const isId3Header = header4Str.startsWith('ID3');
     const isWavExt = name && (name.toLowerCase().endsWith('.wav') || name.toLowerCase().endsWith('.wave'));
     const isAudioMime = file.type && (file.type.includes('audio') || file.type.includes('wav'));
+
+    if (isRiffHeader || isId3Header || isWavExt || isAudioMime) {
+      try {
+        buffer = await file.arrayBuffer();
+        detectedPayload = extractPayloadFromWav(buffer);
+      } catch (err: unknown) {
+        extractError = err instanceof Error ? err.message : String(err);
+      }
+    }
 
     if (!detectedPayload && !isRiffHeader && !isId3Header && !isWavExt && !isAudioMime) {
       setError(
@@ -422,16 +440,74 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
     }
 
     setIsLoading(true);
+    setProgressPercent(0);
 
     try {
       let payload: Uint8Array;
 
       if (currentSourceMode === 'audio') {
+        if (!fileBlob) {
+          setError('Please select an encrypted file or sound first.');
+          return;
+        }
+
+        // Check if this is a Streamed QBS container (Type 3) to avoid loading multi-GB file into RAM
+        const headerSlice = await fileBlob.slice(0, Math.min(65536, fileBlob.size)).arrayBuffer();
+        const headerBytes = new Uint8Array(headerSlice);
+        const isStreamed = headerBytes[0] === 0x51 && headerBytes[1] === 0x42 && headerBytes[2] === 0x53 && headerBytes[3] === 0x53 && headerBytes[5] === 3;
+
+        if (isStreamed) {
+          setLoadingStep('Initializing streaming decryptor...');
+          const abortController = new AbortController();
+          abortControllerRef.current = abortController;
+
+          let writable: FileSystemWritableFileStream | undefined;
+          if (isFileSystemAccessSupported()) {
+            try {
+              const info = inspectPayloadInfo(headerBytes);
+              const handle = await (window as unknown as {
+                showSaveFilePicker: (options: unknown) => Promise<FileSystemFileHandle>;
+              }).showSaveFilePicker({
+                suggestedName: info.filename || 'decrypted_file',
+              });
+              writable = await handle.createWritable();
+            } catch (pickerErr: unknown) {
+              if (pickerErr instanceof DOMException && pickerErr.name === 'AbortError') {
+                setIsLoading(false);
+                return;
+              }
+            }
+          }
+
+          const streamResult = await decryptFileStream({
+            file: fileBlob,
+            password,
+            signal: abortController.signal,
+            writable,
+            onProgress: (prog) => {
+              setLoadingStep(`${prog.step} - ${prog.percent}% (${formatBytes(prog.processedBytes)} / ${formatBytes(prog.totalBytes)})`);
+              setProgressPercent(prog.percent);
+            },
+          });
+
+          const fileResult: DecryptedFileResult = {
+            filename: streamResult.filename,
+            mimeType: streamResult.mimeType,
+            sizeBytes: streamResult.originalSizeBytes,
+            blob: streamResult.blob,
+            objectUrl: streamResult.blob ? URL.createObjectURL(streamResult.blob) : undefined,
+            isDirectToDisk: streamResult.isDirectToDisk,
+          };
+
+          setDecryptedFile(fileResult);
+          return;
+        }
+
         // Step 1: Analyze audio
         setLoadingStep('Analyzing sound container...');
         await new Promise((r) => setTimeout(r, 160));
 
-        const arrayBuffer = await fileBlob!.arrayBuffer();
+        const arrayBuffer = await fileBlob.arrayBuffer();
 
         // Step 2: Extract encrypted payload from RIFF WAV container
         setLoadingStep('Recovering encrypted payload...');
@@ -523,8 +599,15 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   // Download Decrypted File
   const handleDownloadFile = () => {
     if (!decryptedFile) return;
+    if (decryptedFile.isDirectToDisk) return;
+    let url = decryptedFile.objectUrl;
+    if (!url && decryptedFile.blob) {
+      url = URL.createObjectURL(decryptedFile.blob);
+      decryptedFile.objectUrl = url;
+    }
+    if (!url) return;
     const a = document.createElement('a');
-    a.href = decryptedFile.objectUrl;
+    a.href = url;
     a.download = decryptedFile.filename;
     document.body.appendChild(a);
     a.click();
@@ -535,7 +618,12 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
   const handleShareFile = async () => {
     if (!decryptedFile) return;
     try {
-      const shareData = new File([decryptedFile.data], decryptedFile.filename, {
+      const filePayload = decryptedFile.blob || (decryptedFile.data ? new Blob([decryptedFile.data], { type: decryptedFile.mimeType }) : null);
+      if (!filePayload) {
+        handleDownloadFile();
+        return;
+      }
+      const shareData = new File([filePayload], decryptedFile.filename, {
         type: decryptedFile.mimeType,
       });
       if (navigator.canShare && navigator.canShare({ files: [shareData] })) {
@@ -911,13 +999,41 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
           </div>
         )}
 
-        {/* Loading Progress State */}
+        {/* Loading Progress State with Cancel button */}
         {isLoading && (
-          <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 flex items-center gap-3">
-            <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-            <div className="text-sm font-semibold">
-              {loadingStep || 'Processing audio stream...'}
+          <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5 overflow-hidden">
+                <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                <span className="text-xs sm:text-sm font-semibold truncate">
+                  {loadingStep || 'Processing...'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (abortControllerRef.current) {
+                    abortControllerRef.current.abort();
+                    abortControllerRef.current = null;
+                  }
+                  setIsLoading(false);
+                  setError('Decryption cancelled by user.');
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-100 hover:bg-red-200 text-red-700 font-semibold text-xs transition-colors flex-shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Cancel</span>
+              </button>
             </div>
+
+            {progressPercent > 0 && (
+              <div className="w-full bg-blue-200 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-150"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -1056,9 +1172,9 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                 </div>
               </div>
 
-              {/* Type-Specific Preview */}
+              {/* Type-Specific Preview (Only render DOM media if file <= 50MB and objectUrl exists to avoid video engine crash) */}
               <div className="rounded-xl border border-slate-200 bg-white p-3 overflow-hidden">
-                {decryptedFile.mimeType.startsWith('image/') ? (
+                {decryptedFile.objectUrl && decryptedFile.sizeBytes <= 50 * 1024 * 1024 && decryptedFile.mimeType.startsWith('image/') ? (
                   <div className="flex justify-center max-h-72 overflow-hidden rounded-lg">
                     <img
                       src={decryptedFile.objectUrl}
@@ -1066,19 +1182,19 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                       className="max-h-72 object-contain rounded-lg shadow-2xs"
                     />
                   </div>
-                ) : decryptedFile.mimeType.startsWith('video/') ? (
+                ) : decryptedFile.objectUrl && decryptedFile.sizeBytes <= 50 * 1024 * 1024 && decryptedFile.mimeType.startsWith('video/') ? (
                   <video
                     src={decryptedFile.objectUrl}
                     controls
                     className="w-full max-h-72 rounded-lg bg-black"
                   />
-                ) : decryptedFile.mimeType.startsWith('audio/') ? (
+                ) : decryptedFile.objectUrl && decryptedFile.sizeBytes <= 50 * 1024 * 1024 && decryptedFile.mimeType.startsWith('audio/') ? (
                   <audio
                     src={decryptedFile.objectUrl}
                     controls
                     className="w-full mt-1"
                   />
-                ) : decryptedFile.mimeType.includes('pdf') ? (
+                ) : decryptedFile.objectUrl && decryptedFile.sizeBytes <= 25 * 1024 * 1024 && decryptedFile.mimeType.includes('pdf') ? (
                   <iframe
                     src={decryptedFile.objectUrl}
                     title={decryptedFile.filename}
@@ -1088,8 +1204,14 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
                   <div className="flex items-center gap-3 py-3 px-3 bg-slate-50 rounded-lg text-xs text-slate-600">
                     <FileIcon className="w-5 h-5 text-blue-600 flex-shrink-0" />
                     <div>
-                      <span className="font-semibold text-slate-800 block">Binary / Document File</span>
-                      <span>Decrypted file is ready for download.</span>
+                      <span className="font-semibold text-slate-800 block">
+                        {decryptedFile.isDirectToDisk ? 'Saved Directly to Disk' : 'Binary / Document File'}
+                      </span>
+                      <span>
+                        {decryptedFile.isDirectToDisk
+                          ? 'This file was decrypted and written directly to your disk stream.'
+                          : 'Decrypted file is ready for download.'}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -1115,23 +1237,32 @@ export function DecodeView({ initialFile }: DecodeViewProps) {
             {/* File Actions */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
               <div className="flex items-center gap-2">
-                <button
-                  id="download-file-btn"
-                  onClick={handleDownloadFile}
-                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold shadow-xs transition-colors min-h-[40px]"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Download File</span>
-                </button>
+                {!decryptedFile.isDirectToDisk ? (
+                  <button
+                    id="download-file-btn"
+                    onClick={handleDownloadFile}
+                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold shadow-xs transition-colors min-h-[40px]"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download File</span>
+                  </button>
+                ) : (
+                  <div className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs sm:text-sm font-semibold">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Saved to Selected Location on Disk</span>
+                  </div>
+                )}
 
-                <button
-                  id="share-file-btn"
-                  onClick={handleShareFile}
-                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-xs sm:text-sm font-semibold shadow-xs transition-colors min-h-[40px]"
-                >
-                  <Share2 className="w-4 h-4 text-blue-600" />
-                  <span>Share File</span>
-                </button>
+                {!decryptedFile.isDirectToDisk && (
+                  <button
+                    id="share-file-btn"
+                    onClick={handleShareFile}
+                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-xs sm:text-sm font-semibold shadow-xs transition-colors min-h-[40px]"
+                  >
+                    <Share2 className="w-4 h-4 text-blue-600" />
+                    <span>Share File</span>
+                  </button>
+                )}
               </div>
 
               <button

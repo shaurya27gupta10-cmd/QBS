@@ -809,6 +809,8 @@ export interface PayloadInfo {
     memoryCostKb: number;
   };
   isCompressed?: boolean;
+  isStreamed?: boolean;
+  chunkSize?: number;
   filename?: string;
   mimeType?: string;
   originalSizeBytes?: number;
@@ -829,15 +831,15 @@ export function inspectPayloadInfo(rawPayload: Uint8Array): PayloadInfo {
     payload[2] === MAGIC_HEADER_SECURE[2] &&
     payload[3] === MAGIC_HEADER_SECURE[3]
   ) {
-    const view = new DataView(payload.buffer, 0, payload.byteLength);
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
     const version = payload[4];
-    const payloadTypeNum = payload[5]; // 1 = Message, 2 = File
+    const payloadTypeNum = payload[5]; // 1 = Message, 2 = File, 3 = Streamed File
     const kdfId = payload[6];
     const isCompressed = payload[7] === 1;
     const timeCost = view.getUint32(8, false);
     const memoryCostKb = view.getUint32(12, false);
 
-    const type: QbsPayloadType = payloadTypeNum === 2 ? 'file' : 'message';
+    const type: QbsPayloadType = payloadTypeNum === 1 ? 'message' : 'file';
     const kdf: KdfType = kdfId === KDF_ID_ARGON2ID ? 'argon2id' : 'pbkdf2';
 
     if (type === 'message') {
@@ -851,7 +853,46 @@ export function inspectPayloadInfo(rawPayload: Uint8Array): PayloadInfo {
       };
     }
 
-    // Read metadata JSON for file
+    // Check if streamed chunked container (type 3)
+    if (payloadTypeNum === 3) {
+      let chunkSize = 16 * 1024 * 1024;
+      let originalSizeBytes = 0;
+      let filename = 'secure-file';
+      let mimeType = 'application/octet-stream';
+
+      try {
+        let offset = 17 + SALT_LENGTH + IV_LENGTH;
+        chunkSize = view.getUint32(offset, false);
+        offset += 4;
+        originalSizeBytes = Number(view.getBigUint64(offset, false));
+        offset += 8;
+        const metadataLen = view.getUint16(offset, false);
+        offset += 2;
+        const metadataBytes = payload.subarray(offset, offset + metadataLen);
+        const metaStr = new TextDecoder('utf-8').decode(metadataBytes);
+        const meta = JSON.parse(metaStr);
+        if (meta.name) filename = meta.name;
+        if (meta.mime) mimeType = meta.mime;
+      } catch {
+        // Safe fallback
+      }
+
+      return {
+        type: 'file',
+        version,
+        kdf,
+        kdfParams: { timeCost, memoryCostKb },
+        isCompressed: false,
+        isStreamed: true,
+        chunkSize,
+        filename,
+        mimeType,
+        originalSizeBytes,
+        payloadSizeBytes: payload.length,
+      };
+    }
+
+    // Read metadata JSON for standard monolithic file (type 2)
     let filename = 'secure-file';
     let mimeType = 'application/octet-stream';
     let originalSizeBytes = 0;

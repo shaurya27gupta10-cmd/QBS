@@ -38,12 +38,13 @@ export interface EncryptedFileContainer {
 }
 
 export interface DecryptedFileResult {
-  data: Uint8Array;
+  data?: Uint8Array;
   filename: string;
   mimeType: string;
   sizeBytes: number;
-  blob: Blob;
-  objectUrl: string;
+  blob?: Blob;
+  objectUrl?: string;
+  isDirectToDisk?: boolean;
 }
 
 export interface GeneratedSound {
